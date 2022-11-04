@@ -28,7 +28,7 @@ shuffle: shuffle.c commit.c ${TEST} ${BENCH}
 voting: voting.c commit.c ${TEST} ${BENCH}
 	${CPP} ${CFLAGS} -DSIGMA_PARAM=SIGMA_C -c gaussian_ct.cpp -o gaussian.o
 	${CPP} ${CFLAGS} -c commit.c -o commit.o ${LIBS}
-	${CPP} ${CFLAGS} -DMAIN voting.c commit.o sha224-256.c ${GAUSSIAN} ${TEST} ${BENCH} -o voting ${LIBS}
+	${CPP} ${CFLAGS} -DMAIN voting.c commit.o sha224-256.c sha384-512.c ${GAUSSIAN} ${TEST} ${BENCH} -o voting ${LIBS}
 
 spoilCheck: spoilCheck.c commit.c ${TEST} ${BENCH}
 	${CPP} ${CFLAGS} -DSIGMA_PARAM=SIGMA_C -c gaussian_ct.cpp -o gaussian.o

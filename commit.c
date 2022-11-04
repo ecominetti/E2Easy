@@ -22,6 +22,8 @@
 /* The second square root of -1. */
 #define P1		752843710
 
+#define LIM		50
+
 /* Polynomial defining the cyclotomic ring. */
 static nmod_poly_t cyclo_poly;
 
@@ -262,7 +264,17 @@ void commit_sample_short_crt(pcrt_poly_t r) {
 
 // Sample a random polynomial.
 void commit_sample_rand(nmod_poly_t r, flint_rand_t rand) {
-	nmod_poly_randtest(r, rand, DEGREE);
+	int flag;
+
+	do {
+		flag=0;
+		nmod_poly_randtest(r, rand, DEGREE);
+		for (int j = 0; j < DEGREE && flag<LIM; j++) {
+			if (nmod_poly_get_coeff_ui(r,j)==0) {
+				flag++;
+			}
+		}
+	} while (flag==LIM);
 }
 
 // Sample a random polynomial in CRT representation.
