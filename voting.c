@@ -932,10 +932,10 @@ static void verifyVote (uint32_t vote, commitkey_t *key, pcrt_poly_t r[WIDTH], t
 
 #ifdef MAIN
 int main(int argc, char *arg[]) {
-	FILE *resultadoVoterActive;
+	FILE *resultadoCycles;
   flint_rand_t rand;
   commitkey_t key;
-	unsigned long long cpuCycles;
+	unsigned long long onVoterActiveCycles, onChallengeCycles;
 	commit_t com;
 	nmod_poly_t m,_m[VOTERS];
 	pcrt_poly_t r[WIDTH];
@@ -949,7 +949,7 @@ int main(int argc, char *arg[]) {
 	uint8_t trackingCode[SHA512HashSize];
 	uint8_t Teste[SHA512HashSize];
 	time_t timer;
-	int numTest=200000;
+	int numVotos, numTest=2;
 	int flag=0;
 
   // flint_randinit(rand);
@@ -967,50 +967,62 @@ int main(int argc, char *arg[]) {
 	// for (int i = 0; i < 100; i++) {
 	// 	printf("%2d %08llx\n", i, m->coeffs[i]);
 	// }
+	resultadoCycles = fopen("resultadoCiclos","a");
+	if (resultadoCycles==NULL) {
+		printf("Erro arquivo\n");
+		return 0;
+	}
 
+	for (numVotos = 500; numVotos <= 800; numVotos+=500) {
+		fprintf(resultadoCycles, "Numero Votos = %d, %d testes\n", numVotos, numTest);
+		fprintf(resultadoCycles, "    Setup;  onStart;onVoterActive;  onChallenge;    onFinish\n");
+		fflush(resultadoCycles);
+		for (int i = 0; i < numTest; i ++) {
 
-	for (int j = 0; j < 5; j ++) {
-		Setup(&key);
-
-		onStart (&key, infoContest, vTable);
-
-		// resultadoVoterActive = fopen("onVoterActiveCycles","a");
-		// fprintf(resultadoVoterActive, "onVoterActive Cycles\n");
-
-
-		cpuCycles=0;
-		for(int j = 0; j < 300; j ++) {
-			getrandom(&vote, sizeof(vote), 0);
-			vote&=0x8FFFFFFF;
 			bench_reset();
 			bench_before();
-			onVoterActive(vote, &com, m, &key, r, &timer, trackingCode);
+			Setup(&key);
 			bench_after();
-			// printf("\n\n\nTime for vote: ");
-			cpuCycles=bench_total();
-			// fprintf(resultadoVoterActive, "%lld\n", cpuCycles);
-			// fflush(resultadoVoterActive);
+			fprintf(resultadoCycles, "%9lld;", bench_total());
 
-			verifyVote (vote, &key, r, &timer, trackingCode);
+			bench_reset();
+			bench_before();
+			onStart (&key, infoContest, vTable);
+			bench_after();
+			fprintf(resultadoCycles, "%9lld;", bench_total());
 
-			onChallenge (TRUE, &vTable[voteNumber], &com, m, &key, r, &timer, trackingCode);
-			if(voteNumber==VOTERS) {
-				voteNumber=0;
+			onVoterActiveCycles = 0;
+			onChallengeCycles = 0;
+			for(int j = 0; j < numVotos; j ++) {
+				getrandom(&vote, sizeof(vote), 0);
+				vote&=0x8FFFFFFF;
+
+				bench_reset();
+				bench_before();
+				onVoterActive(vote, &com, m, &key, r, &timer, trackingCode);
+				bench_after();
+				onVoterActiveCycles+=bench_total();
+
+				//verifyVote (vote, &key, r, &timer, trackingCode);
+
+				bench_reset();
+				bench_before();
+				onChallenge (TRUE, &vTable[voteNumber], &com, m, &key, r, &timer, trackingCode);
+				bench_after();
+				onChallengeCycles+=bench_total();
 			}
+
+			fprintf(resultadoCycles, "%13lld;%13lld;", onVoterActiveCycles,onChallengeCycles);
+
+			bench_reset();
+			bench_before();
+			onFinish(vTable, &key);
+			bench_after();
+			fprintf(resultadoCycles, "%12lld\n", bench_total());
+			fflush(resultadoCycles);
 		}
-		// fclose(resultadoVoterActive);
-		if (voteNumber==0){
-			voteNumber=VOTERS;
-		}
-		// printf("%d\n", sizeof(uint32_t));
-		bench_reset();
-		bench_before();
-		onFinish(vTable, &key);
-		bench_after();
-		printf("Time for shuffle: ");
-	  bench_print();
-		printf("\n");
 	}
+	fclose (resultadoCycles);
 
 	// for (int i = 0; i < 20; i++){
 	// 	bench_reset();
