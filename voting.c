@@ -52,6 +52,25 @@ void initializeVoteTable(VoteTable *vTable){
 	vTable->timer=0x00;
 }
 
+void finalizeVoteTable(VoteTable *vTable){
+	for (int i = 0; i < 2; i++) {
+		nmod_poly_zero(vTable->commit.c1[i]);
+		nmod_poly_zero(vTable->commit.c2[i]);
+		nmod_poly_clear(vTable->commit.c1[i]);
+		nmod_poly_clear(vTable->commit.c2[i]);
+		for (int j = 0; j < WIDTH; j++){
+			nmod_poly_zero(vTable->r[j][i]);
+			nmod_poly_clear(vTable->r[j][i]);
+		}
+	}
+	nmod_poly_zero(vTable->vote);
+	nmod_poly_clear(vTable->vote);
+	for (int i = 0; i < SHA512HashSize; i++) {
+		vTable->trackingCode[i]=0x00;
+	}
+	vTable->timer=0x00;
+}
+
 /* Function to sort an array using insertion sort */
 void insertionSort(uint32_t arr[], int n)
 {
@@ -718,6 +737,7 @@ static void onVoterActive(uint32_t vote, commit_t *com, nmod_poly_t m, commitkey
 
 	SHA512Result(&sha, trackingCode);
 
+	free(coeffs);
 	/* TODO: output tracking code and timer */
 }
 
@@ -766,6 +786,13 @@ static void onChallenge (bool cast, VoteTable *vTable, commit_t *com, nmod_poly_
 	}
 	/* free commitment and clear message poly */
 	nmod_poly_zero(m);
+	nmod_poly_clear(m);
+	for (int i = 0; i < WIDTH; i++) {
+		for (int j = 0; j < 2; j++) {
+			nmod_poly_zero(r[i][j]);
+			nmod_poly_clear(r[i][j]);
+		}
+	}
 	commit_free(com);
 
 }
@@ -827,12 +854,12 @@ static void onFinish (VoteTable *vTable, commitkey_t *key) {
 
 	/* Clear auxiliary variables and commit-vote-opening association*/
 	if (res) {
-		printf("ZKP Successful\n" );
+		//printf("ZKP Successful\n" );
 		voteOutput = fopen("voteOutput", "w");
 		fwrite(H0, sizeof(uint8_t), SHA512HashSize,voteOutput);
 		fwrite(Hcurrent, sizeof(uint8_t), SHA512HashSize,voteOutput);
 		for (int i = 0; i < voteNumber; i++) {
-			nmod_poly_clear(vTable[i].vote);
+			//nmod_poly_clear(vTable[i].vote);
 			nmod_poly_clear(m[i]);
 			nmod_poly_clear(_m[i]);
 			fwrite(&RDV[i], sizeof(uint32_t), 1,voteOutput);
@@ -844,16 +871,21 @@ static void onFinish (VoteTable *vTable, commitkey_t *key) {
 				nmod_poly_clear(com[i].c1[j]);
 				nmod_poly_clear(com[i].c2[j]);
 				for (int w = 0; w < WIDTH; w++){
-					nmod_poly_clear(vTable[i].r[w][j]);
+					//nmod_poly_clear(vTable[i].r[w][j]);
 					nmod_poly_clear(r[i][w][j]);
 				}
 			}
 		}
 		fclose(voteOutput);
+	} else {
+		printf("ERRO ZKP\n");
 	}
 
 	/* TODO: Sign ZKP result and final tracking code */
 
+	for (int i = 0; i < VOTERS; i++) {
+		finalizeVoteTable(&vTable[i]);
+	}
 	commit_finish();
 	flint_randclear(rand);
 	flint_cleanup();
@@ -949,7 +981,7 @@ int main(int argc, char *arg[]) {
 	uint8_t trackingCode[SHA512HashSize];
 	uint8_t Teste[SHA512HashSize];
 	time_t timer;
-	int numVotos, numTest=2;
+	int numVotos, numTest=1000;
 	int flag=0;
 
   // flint_randinit(rand);
@@ -977,7 +1009,13 @@ int main(int argc, char *arg[]) {
 		fprintf(resultadoCycles, "Numero Votos = %d, %d testes\n", numVotos, numTest);
 		fprintf(resultadoCycles, "    Setup;  onStart;onVoterActive;  onChallenge;    onFinish\n");
 		fflush(resultadoCycles);
+		printf("Votos = %d\n",numVotos);
 		for (int i = 0; i < numTest; i ++) {
+
+			if (i%100==0) {
+				printf("Teste = %d\n",i);
+			}
+
 
 			bench_reset();
 			bench_before();
