@@ -135,6 +135,8 @@ uint64_t commit_norm_inf(nmod_poly_t r) {
 
 // Generate a key pair.
 void commit_keygen(commitkey_t *key, flint_rand_t rand) {
+	int flag;
+
 	for (int i = 0; i < HEIGHT; i++) {
 		for (int j = 0; j < WIDTH; j++) {
 			for (int k = 0; k < 2; k++) {
@@ -150,7 +152,15 @@ void commit_keygen(commitkey_t *key, flint_rand_t rand) {
 	for (int i = 0; i < HEIGHT; i++) {
 		for (int j = HEIGHT; j < WIDTH; j++) {
 			for (int k = 0; k < 2; k++) {
-				nmod_poly_randtest(key->B1[i][j][k], rand, DEGCRT);
+				do {
+					flag=0;
+					nmod_poly_randtest(key->B1[i][j][k], rand, DEGCRT);
+					for (int l = 0; l < DEGCRT && flag<LIM; l++) {
+						if (nmod_poly_get_coeff_ui(key->B1[i][j][k],l)==0) {
+							flag++;
+						}
+					}
+				} while (flag==LIM);
 			}
 		}
 	}
@@ -162,7 +172,15 @@ void commit_keygen(commitkey_t *key, flint_rand_t rand) {
 				nmod_poly_set_coeff_ui(key->b2[i][j], 0, 1);
 			}
 			if (i > HEIGHT) {
-				nmod_poly_randtest(key->b2[i][j], rand, DEGCRT);
+				do {
+					flag=0;
+					nmod_poly_randtest(key->b2[i][j], rand, DEGCRT);
+					for (int l = 0; l < DEGCRT && flag<LIM; l++) {
+						if (nmod_poly_get_coeff_ui(key->b2[i][j],l)==0) {
+							flag++;
+						}
+					}
+				} while (flag==LIM);
 			}
 		}
 	}

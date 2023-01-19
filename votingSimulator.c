@@ -14,14 +14,11 @@
 #include "fastrandombytes.h"
 #include "sha.h"
 
-#define VOTERS 3000
+#define CONTESTS 6
+#define VOTERS 600
 #define TRUE 1
 #define FALSE 0
 
-static int voteNumber;
-static uint8_t H0[SHA512HashSize];
-static uint8_t Hcurrent[SHA512HashSize];
-static uint32_t RDV[VOTERS];
 
 typedef struct _VoteTable {
 	commit_t commit;
@@ -31,7 +28,20 @@ typedef struct _VoteTable {
 	uint32_t timer;
 } VoteTable;
 
-void initializeVoteTable(VoteTable *vTable){
+static int voteNumber;
+static uint8_t H0[CONTESTS][SHA512HashSize];
+static uint8_t Hcurrent[CONTESTS][SHA512HashSize];
+static uint32_t RDV[CONTESTS][VOTERS];
+static VoteTable vTable[CONTESTS][VOTERS];
+static commitkey_t key;
+static commit_t com[CONTESTS];
+static nmod_poly_t m[CONTESTS];
+static pcrt_poly_t r[CONTESTS][WIDTH];
+static time_t timer[CONTESTS];
+static uint8_t trackingCode[CONTESTS][SHA512HashSize];
+static uint8_t voteContestCasted;
+
+static void initializeVoteTable(VoteTable *vTable){
 	for (int i = 0; i < 2; i++) {
 		nmod_poly_init(vTable->commit.c1[i], MODP);
 		nmod_poly_init(vTable->commit.c2[i], MODP);
@@ -52,7 +62,7 @@ void initializeVoteTable(VoteTable *vTable){
 	vTable->timer=0x00;
 }
 
-void finalizeVoteTable(VoteTable *vTable){
+static void finalizeVoteTable(VoteTable *vTable){
 	for (int i = 0; i < 2; i++) {
 		nmod_poly_zero(vTable->commit.c1[i]);
 		nmod_poly_zero(vTable->commit.c2[i]);
@@ -72,7 +82,7 @@ void finalizeVoteTable(VoteTable *vTable){
 }
 
 /* Function to sort an array using insertion sort */
-void insertionSort(uint32_t arr[], int n)
+static void insertionSort(uint32_t arr[], int n)
 {
 	int i, key, j;
 	for (i = 1; i < n; i++) {
@@ -89,22 +99,7 @@ void insertionSort(uint32_t arr[], int n)
 	}
 }
 
-void randPoly (nmod_poly_t poly, flint_rand_t rand, int size) {
-	int flag;
-	int lim = 50;
-
-	do {
-		flag=0;
-		nmod_poly_randtest(poly,rand,size);
-		for (int j = 0; j < DEGREE && flag<lim; j++) {
-			if (nmod_poly_get_coeff_ui(poly,j)==0) {
-				flag++;
-			}
-		}
-	} while (flag==lim);
-}
-
-void shuffle_hash(nmod_poly_t d[2], commitkey_t *key, commit_t x, commit_t y,
+static void shuffle_hash(nmod_poly_t d[2], commitkey_t *key, commit_t x, commit_t y,
 		nmod_poly_t alpha, nmod_poly_t beta, nmod_poly_t u[2],
 		nmod_poly_t t[2], nmod_poly_t _t[2]) {
 	SHA256Context sha;
@@ -334,19 +329,13 @@ static int verifier_lin(commit_t com, commit_t x,
 }
 
 static int run(commit_t com[VOTERS], nmod_poly_t m[VOTERS], nmod_poly_t _m[VOTERS],
-		nmod_poly_t r[VOTERS][WIDTH][2], commitkey_t *key, flint_rand_t rng, int MSGS) {
+		nmod_poly_t r[VOTERS][WIDTH][2], commitkey_t *key, flint_rand_t rng, int MSGS, char *outputFileName) {
 	FILE *zkpOutput;
 	int flag, result = 1;
 	commit_t d[VOTERS];
 	nmod_poly_t t0, t1, rho, beta, theta[VOTERS], s[VOTERS];
 	nmod_poly_t y[WIDTH][2], _y[WIDTH][2], t[2], _t[2], u[2], _r[VOTERS][WIDTH][2];
-	flint_rand_t rand2;
-	uint64_t buf1,buf2;
 
-	// flint_randinit(rand2);
-	// getrandom(&buf1, sizeof(buf1), 0);
-	// getrandom(&buf2, sizeof(buf2), 0);
-	// flint_randseed(rand2, buf1, buf2);
 
 	nmod_poly_init(t0, MODP);
 	nmod_poly_init(t1, MODP);
@@ -375,7 +364,7 @@ static int run(commit_t com[VOTERS], nmod_poly_t m[VOTERS], nmod_poly_t _m[VOTER
 		}
 	}
 
-	zkpOutput = fopen("ZKPOutput", "w");
+	zkpOutput = fopen(outputFileName, "w");
 	if (zkpOutput == NULL) {
 		printf("Error\n");
 	}
@@ -595,22 +584,23 @@ static int run(commit_t com[VOTERS], nmod_poly_t m[VOTERS], nmod_poly_t _m[VOTER
 }
 
 
-static void Setup(commitkey_t *key) {
+void Setup() {
 	flint_rand_t rand;
 
 	flint_randinit(rand);
-  commit_setup();
+    commit_setup();
 
-	commit_keygen(key, rand);
+	commit_keygen(&key, rand);
 
 	commit_finish();
 	flint_randclear(rand);
 	flint_cleanup();
 }
 
-static void onStart (commitkey_t *key, char *infoContest, VoteTable vTable[VOTERS]) {
+void onStart (char *infoContest) {
 	uint8_t Q[] = "Teste\0";
 	SHA512Context sha;
+	commitkey_t *keyP = &key;
 	uint8_t overlineQ[SHA512HashSize];
 
 	/* Start commitment alg */
@@ -626,14 +616,14 @@ static void onStart (commitkey_t *key, char *infoContest, VoteTable vTable[VOTER
 	for (int i = 0; i < HEIGHT; i++) {
 		for (int j = 0; j < WIDTH; j++) {
 			for (int k = 0; k < 2; k++) {
-				SHA512Input(&sha, (const uint8_t*)key->B1[i][j][k]->coeffs, key->B1[i][j][k]->alloc * sizeof(uint64_t));
+				SHA512Input(&sha, (const uint8_t*)keyP->B1[i][j][k]->coeffs, keyP->B1[i][j][k]->alloc * sizeof(uint64_t));
 			}
 		}
 	}
 
 	for (int j = 0; j < WIDTH; j++) {
 		for (int k = 0; k < 2; k++) {
-			SHA512Input(&sha, (const uint8_t*)key->b2[j][k]->coeffs, key->b2[j][k]->alloc * sizeof(uint64_t));
+			SHA512Input(&sha, (const uint8_t*)keyP->b2[j][k]->coeffs, keyP->b2[j][k]->alloc * sizeof(uint64_t));
 		}
 	}
 
@@ -643,126 +633,154 @@ static void onStart (commitkey_t *key, char *infoContest, VoteTable vTable[VOTER
 
 	/*TODO: Process infoContest*/
 
-	/* Creat H0 for table */
-	SHA512Reset(&sha);
+	/* Creat H0 for each contest table */
+	for (uint8_t i = 0; i < CONTESTS; i++)
+	{
+		SHA512Reset(&sha);
 
-	SHA512Input(&sha, overlineQ, SHA512HashSize);
+		SHA512Input(&sha, overlineQ, SHA512HashSize);
 
-	SHA512Input(&sha, 0x00, 1);//Simulating X
+		SHA512Input(&sha, &i, 1);
 
-	SHA512Result(&sha, H0);
+		SHA512Result(&sha, H0[i]);
+	}
 
-	for (int i  = 0; i < SHA512HashSize; i++) {
-		Hcurrent[i]=H0[i];
+	for (int j = 0; j < CONTESTS; j++) {
+		for (int i  = 0; i < SHA512HashSize; i++) {
+			Hcurrent[j][i]=H0[j][i];
+		}
 	}
 
 	/* Initialize voting table and RDV*/
 	for (int i  = 0; i < VOTERS; i++) {
-		initializeVoteTable(&vTable[i]);
-		RDV[i]=0x00;
+		for (int j = 0; j < CONTESTS; j++) {
+			initializeVoteTable(&vTable[j][i]);
+			RDV[j][i]=0x00;
+		}
 	}
 
 	/* Initialize number of voters as 0 */
-	voteNumber=0;
+	voteNumber = 0;
+
+	/* Initialize vote timestamp as 0 */
+	for (int i = 0; i < CONTESTS; i++) {
+		timer[i] = 0x00;
+	}
+
+	/* Initialize if a vote was casted for a contest as 0 */
+	voteContestCasted = 0;
 
 	/*TODO: Output Sign public key and H0 */
 }
 
-static void onVoterActive(uint32_t vote, commit_t *com, nmod_poly_t m, commitkey_t *key, pcrt_poly_t r[WIDTH], time_t *timer, uint8_t trackingCode[SHA512HashSize]) {
+void onVoterActive(uint32_t vote, uint8_t cont) {
 	SHA512Context sha;
 	uint32_t timerInt;
 	uint64_t *coeffs;
 	int aux;
 
+	/* Check if the contest provided is within range*/
+	if (cont > CONTESTS || cont < 0) {
+		cont = 0;
+	}
+
 	/* Initialize polinomial m,r to receive the vote and random to create the commitment */
-	nmod_poly_init(m, MODP);
-	nmod_poly_zero(m);
+	nmod_poly_init(m[cont], MODP);
+	nmod_poly_zero(m[cont]);
 	for (int i = 0; i < WIDTH; i++) {
 		for (int j = 0; j < 2; j++) {
-			nmod_poly_init(r[i][j], MODP);
-			nmod_poly_zero(r[i][j]);
+			nmod_poly_init(r[cont][i][j], MODP);
+			nmod_poly_zero(r[cont][i][j]);
 		}
 	}
 
 	/* Set the coefficient 0 of m as the vote value */
-	nmod_poly_set_coeff_ui(m, 0, vote);
+	nmod_poly_set_coeff_ui(m[cont], 0, vote);
 
 	/* Draw r randomly and create the commitment */
 	for (int i = 0; i < WIDTH; i++) {
-		commit_sample_short_crt(r[i]);
+		commit_sample_short_crt(r[cont][i]);
 	}
-	commit_doit(com, m, key, r);
+	commit_doit(&com[cont], m[cont], &key, r[cont]);
 
 
 	/* Set timer as current time */
-	time(timer);
+	time(&timer[cont]);
 
-	timerInt=(uint32_t)*timer;
+	timerInt=(uint32_t)timer[cont];
 
 	/* Parse the commitment to coeffs variable */
 	aux = 0;
-	coeffs = (uint64_t*)malloc(sizeof(uint64_t)*(nmod_poly_length(com->c1[0])+
-																						   nmod_poly_length(com->c1[1])+
-																						   nmod_poly_length(com->c2[0])+
-																					     nmod_poly_length(com->c2[1])));
+	coeffs = (uint64_t*)malloc(sizeof(uint64_t)*(nmod_poly_length(com[cont].c1[0])+
+													  nmod_poly_length(com[cont].c1[1])+
+													   nmod_poly_length(com[cont].c2[0])+
+													     nmod_poly_length(com[cont].c2[1])));
 
-	for (int i = 0; i < nmod_poly_length(com->c1[0]); i++){
-		coeffs[i] = nmod_poly_get_coeff_ui(com->c1[0],i);
+	for (int i = 0; i < nmod_poly_length(com[cont].c1[0]); i++){
+		coeffs[i] = nmod_poly_get_coeff_ui(com[cont].c1[0],i);
 	}
-	aux = nmod_poly_length(com->c1[0]);
+	aux = nmod_poly_length(com[cont].c1[0]);
 
-	for (int i = 0; i < nmod_poly_length(com->c1[1]); i++){
-		coeffs[i+aux] = nmod_poly_get_coeff_ui(com->c1[1],i);
+	for (int i = 0; i < nmod_poly_length(com[cont].c1[1]); i++){
+		coeffs[i+aux] = nmod_poly_get_coeff_ui(com[cont].c1[1],i);
 	}
-	aux+=nmod_poly_length(com->c1[1]);
+	aux+=nmod_poly_length(com[cont].c1[1]);
 
-	for (int i = 0; i < nmod_poly_length(com->c2[0]); i++){
-		coeffs[i+aux] = nmod_poly_get_coeff_ui(com->c2[0],i);
+	for (int i = 0; i < nmod_poly_length(com[cont].c2[0]); i++){
+		coeffs[i+aux] = nmod_poly_get_coeff_ui(com[cont].c2[0],i);
 	}
-	aux+=nmod_poly_length(com->c2[0]);
+	aux+=nmod_poly_length(com[cont].c2[0]);
 
-	for (int i = 0; i < nmod_poly_length(com->c2[1]); i++){
-		coeffs[i+aux] = nmod_poly_get_coeff_ui(com->c2[1],i);
+	for (int i = 0; i < nmod_poly_length(com[cont].c2[1]); i++){
+		coeffs[i+aux] = nmod_poly_get_coeff_ui(com[cont].c2[1],i);
 	}
-	aux+=nmod_poly_length(com->c2[1]);
+	aux+=nmod_poly_length(com[cont].c2[1]);
 
 
 	/* Compute tracking code */
 	SHA512Reset(&sha);
 
-	SHA512Input(&sha, Hcurrent, SHA512HashSize);
+	SHA512Input(&sha, Hcurrent[cont], SHA512HashSize);
 
 	SHA512Input(&sha, (const uint8_t*)&timerInt, 4);
 
 	SHA512Input(&sha, (const uint8_t*)coeffs, aux * sizeof(uint64_t));
 
-	SHA512Result(&sha, trackingCode);
+	SHA512Result(&sha, trackingCode[cont]);
 
 	free(coeffs);
+
+	/* Inform that a vote was casted for this contest */
+	voteContestCasted += (0x01 << cont);
+
 	/* TODO: output tracking code and timer */
 }
 
-static void onChallenge (bool cast, VoteTable *vTable, commit_t *com, nmod_poly_t m, commitkey_t *key, pcrt_poly_t r[WIDTH], time_t *timer, uint8_t trackingCode[SHA512HashSize]) {
+void onChallenge (bool cast) {
 
 	/* If vote is cast, store it on table */
 	if (cast){
-		for (int i = 0; i < 2; i++) {
-			nmod_poly_set(vTable->commit.c1[i], com->c1[i]);
-			nmod_poly_set(vTable->commit.c2[i], com->c2[i]);
-			for (int j = 0; j < WIDTH; j++){
-				nmod_poly_set(vTable->r[j][i],r[j][i]);
+		for (uint8_t cont = 0; cont < CONTESTS; cont++) {
+			if (((voteContestCasted >> cont) & 1) == 1) {
+				for (int i = 0; i < 2; i++) {
+					nmod_poly_set(vTable[cont][voteNumber].commit.c1[i], com[cont].c1[i]);
+					nmod_poly_set(vTable[cont][voteNumber].commit.c2[i], com[cont].c2[i]);
+					for (int j = 0; j < WIDTH; j++){
+						nmod_poly_set(vTable[cont][voteNumber].r[j][i],r[cont][j][i]);
+					}
+				}
+				nmod_poly_set(vTable[cont][voteNumber].vote,m[cont]);
+				vTable[cont][voteNumber].timer=(uint32_t)timer[cont];
+				/* Also set Hcurrent as the tracking code */
+				for (int i = 0; i < SHA512HashSize; i++) {
+					vTable[cont][voteNumber].trackingCode[i]=trackingCode[cont][i];
+					Hcurrent[cont][i]=trackingCode[cont][i];
+				}
+				/* Add vote to RDV and sort RDV */
+				RDV[cont][voteNumber]=(uint32_t)nmod_poly_get_coeff_ui(m[cont], 0);
+				insertionSort(RDV[cont],voteNumber+1);
 			}
 		}
-		nmod_poly_set(vTable->vote,m);
-		vTable->timer=(uint32_t)*timer;
-		/* Also set Hcurrent as the tracking code */
-		for (int i = 0; i < SHA512HashSize; i++) {
-			vTable->trackingCode[i]=trackingCode[i];
-			Hcurrent[i]=trackingCode[i];
-		}
-		/* Add vote to RDV and sort RDV */
-		RDV[voteNumber]=(uint32_t)nmod_poly_get_coeff_ui(m, 0);
-		insertionSort(RDV,voteNumber+1);
 
 		/* Increment vote number as a vote has been registered */
 		voteNumber++;
@@ -770,124 +788,137 @@ static void onChallenge (bool cast, VoteTable *vTable, commit_t *com, nmod_poly_
 
 		/* TODO: Sign tracking code and output*/
 
-
 	} else {
 		/* Benaloh Challenge: output  Hcurrent, r and vote. Discard everything*/
-		for (int i = 0; i < WIDTH; i++) {
-			for (int j = 0; j < 2; j++) {
-				nmod_poly_print(r[i][j]);
-				nmod_poly_zero(r[i][j]);
+		for (uint8_t cont = 0; cont < CONTESTS && ((voteContestCasted << cont) & 1) == 1; cont++) {
+			for (int i = 0; i < WIDTH; i++) {
+				for (int j = 0; j < 2; j++) {
+					nmod_poly_print(r[cont][i][j]);
+					nmod_poly_zero(r[cont][i][j]);
+				}
 			}
+			for (int i = 0; i < SHA512HashSize; i++) {
+				printf("%02x ",Hcurrent[cont][i]);
+				trackingCode[cont][i]=0x00;
+			}
+			printf("\n%lld\n", nmod_poly_get_coeff_ui(m[cont], 0));
 		}
-		for (int i = 0; i < SHA512HashSize; i++) {
-			printf("%02x ",Hcurrent[i]);
-			trackingCode[i]=0x00;
-		}
-		printf("\n%lld\n", nmod_poly_get_coeff_ui(m, 0));
 	}
 	/* free commitment and clear message poly */
-	nmod_poly_zero(m);
-	nmod_poly_clear(m);
-	for (int i = 0; i < WIDTH; i++) {
-		for (int j = 0; j < 2; j++) {
-			nmod_poly_zero(r[i][j]);
-			nmod_poly_clear(r[i][j]);
+	for (uint8_t cont = 0; cont < CONTESTS; cont++) {
+		nmod_poly_zero(m[cont]);
+		nmod_poly_clear(m[cont]);
+		for (int i = 0; i < WIDTH; i++) {
+			for (int j = 0; j < 2; j++) {
+				nmod_poly_zero(r[cont][i][j]);
+				nmod_poly_clear(r[cont][i][j]);
+			}
 		}
+		commit_free(&com[cont]);
 	}
-	commit_free(com);
+	voteContestCasted = 0x00;
 
 }
 
-static void onFinish (VoteTable *vTable, commitkey_t *key) {
+void onFinish () {
 	FILE *voteOutput;
 	SHA512Context sha;
 	flint_rand_t rand;
 	int res;
-	commit_t com[VOTERS];
-	nmod_poly_t m[VOTERS], _m[VOTERS];
-	pcrt_poly_t r[VOTERS][WIDTH];
+	commit_t com_aux[VOTERS];
+	nmod_poly_t m_aux[VOTERS], _m[VOTERS];
+	pcrt_poly_t r_aux[VOTERS][WIDTH];
 	uint8_t closeSignal[] = "CLOSE\0";
+	char outputFileName[20];
 
-
-	/* Initialize auxiliary variables */
 	flint_randinit(rand);
-	for (int i = 0; i < voteNumber; i++) {
-		for (int j = 0; j < 2; j++) {
-			nmod_poly_init(com[i].c1[j], MODP);
-			nmod_poly_init(com[i].c2[j], MODP);
-			nmod_poly_zero(com[i].c1[j]);
-			nmod_poly_zero(com[i].c2[j]);
-			for (int w = 0; w < WIDTH; w++){
-				nmod_poly_init(r[i][w][j], MODP);
-				nmod_poly_zero(r[i][w][j]);
-			}
-		}
-
-		nmod_poly_init(m[i], MODP);
-		nmod_poly_zero(m[i]);
-		nmod_poly_init(_m[i], MODP);
-		nmod_poly_zero(_m[i]);
-	}
-
-	/* Compute Hlast */
-	SHA512Reset(&sha);
-
-	SHA512Input(&sha, Hcurrent, SHA512HashSize);
-
-	SHA512Input(&sha, (const uint8_t*)closeSignal, strlen((char *)closeSignal));
-
-	SHA512Result(&sha, Hcurrent);
-
-	/* Parse vTable variables to auxiliary variables */
-	for (int i = 0; i < voteNumber; i++) {
-		for (int j = 0; j < 2; j++) {
-			nmod_poly_set(com[i].c1[j], vTable[i].commit.c1[j]);
-			nmod_poly_set(com[i].c2[j], vTable[i].commit.c2[j]);
-			for (int w = 0; w < WIDTH; w++){
-				nmod_poly_set(r[i][w][j], vTable[i].r[w][j]);
-			}
-		}
-		nmod_poly_set(m[i], vTable[i].vote);
-		nmod_poly_set_coeff_ui(_m[i], 0, RDV[i]);
-	}
-
-	res=run(com, m, _m, r, key, rand, voteNumber);
-
-	/* Clear auxiliary variables and commit-vote-opening association*/
-	if (res) {
-		//printf("ZKP Successful\n" );
-		voteOutput = fopen("voteOutput", "w");
-		fwrite(H0, sizeof(uint8_t), SHA512HashSize,voteOutput);
-		fwrite(Hcurrent, sizeof(uint8_t), SHA512HashSize,voteOutput);
+	for (uint8_t cont = 0; cont < CONTESTS; cont++) {
+		/* Initialize auxiliary variables */
 		for (int i = 0; i < voteNumber; i++) {
-			//nmod_poly_clear(vTable[i].vote);
-			nmod_poly_clear(m[i]);
-			nmod_poly_clear(_m[i]);
-			fwrite(&RDV[i], sizeof(uint32_t), 1,voteOutput);
-			fwrite(vTable[i].trackingCode, sizeof(uint8_t), SHA512HashSize,voteOutput);
-			fwrite(&vTable[i].timer, sizeof(uint32_t), 1,voteOutput);
 			for (int j = 0; j < 2; j++) {
-				fwrite(vTable[i].commit.c1[j]->coeffs, sizeof(uint32_t), vTable[i].commit.c1[j]->length,voteOutput);
-				fwrite(vTable[i].commit.c2[j]->coeffs, sizeof(uint32_t), vTable[i].commit.c2[j]->length,voteOutput);
-				nmod_poly_clear(com[i].c1[j]);
-				nmod_poly_clear(com[i].c2[j]);
+				nmod_poly_init(com_aux[i].c1[j], MODP);
+				nmod_poly_init(com_aux[i].c2[j], MODP);
+				nmod_poly_zero(com_aux[i].c1[j]);
+				nmod_poly_zero(com_aux[i].c2[j]);
 				for (int w = 0; w < WIDTH; w++){
-					//nmod_poly_clear(vTable[i].r[w][j]);
-					nmod_poly_clear(r[i][w][j]);
+					nmod_poly_init(r_aux[i][w][j], MODP);
+					nmod_poly_zero(r_aux[i][w][j]);
 				}
 			}
+
+			nmod_poly_init(m_aux[i], MODP);
+			nmod_poly_zero(m_aux[i]);
+			nmod_poly_init(_m[i], MODP);
+			nmod_poly_zero(_m[i]);
 		}
-		fclose(voteOutput);
-	} else {
-		printf("ERRO ZKP\n");
+
+		/* Compute Hlast */
+		SHA512Reset(&sha);
+
+		SHA512Input(&sha, Hcurrent[cont], SHA512HashSize);
+
+		SHA512Input(&sha, (const uint8_t*)closeSignal, strlen((char *)closeSignal));
+
+		SHA512Result(&sha, Hcurrent[cont]);
+
+		/* Parse vTable variables to auxiliary variables */
+		for (int i = 0; i < voteNumber; i++) {
+			for (int j = 0; j < 2; j++) {
+				nmod_poly_set(com_aux[i].c1[j], vTable[cont][i].commit.c1[j]);
+				nmod_poly_set(com_aux[i].c2[j], vTable[cont][i].commit.c2[j]);
+				for (int w = 0; w < WIDTH; w++){
+					nmod_poly_set(r_aux[i][w][j], vTable[cont][i].r[w][j]);
+				}
+			}
+			nmod_poly_set(m_aux[i], vTable[cont][i].vote);
+			nmod_poly_set_coeff_ui(_m[i], 0, RDV[cont][i]);
+		}
+
+		snprintf(outputFileName,20,"ZKPOutput_Cont%d", cont);
+
+		bench_reset();
+		bench_before();
+		res=run(com_aux, m_aux, _m, r_aux, &key, rand, voteNumber, outputFileName);
+		bench_after();
+		printf("B ZKP = %lld\n", bench_total());
+
+		/* Clear auxiliary variables and commit-vote-opening association*/
+		if (res) {
+			//printf("ZKP Successful\n" );
+			snprintf(outputFileName,20,"voteOutput_Cont%d", cont);
+			voteOutput = fopen(outputFileName, "w");
+			fwrite(H0[cont], sizeof(uint8_t), SHA512HashSize,voteOutput);
+			fwrite(Hcurrent[cont], sizeof(uint8_t), SHA512HashSize,voteOutput);
+			for (int i = 0; i < voteNumber; i++) {
+				nmod_poly_clear(m_aux[i]);
+				nmod_poly_clear(_m[i]);
+				fwrite(&RDV[cont][i], sizeof(uint32_t), 1,voteOutput);
+				fwrite(vTable[cont][i].trackingCode, sizeof(uint8_t), SHA512HashSize,voteOutput);
+				fwrite(&vTable[cont][i].timer, sizeof(uint32_t), 1,voteOutput);
+				for (int j = 0; j < 2; j++) {
+					fwrite(vTable[cont][i].commit.c1[j]->coeffs, sizeof(uint32_t), vTable[cont][i].commit.c1[j]->length,voteOutput);
+					fwrite(vTable[cont][i].commit.c2[j]->coeffs, sizeof(uint32_t), vTable[cont][i].commit.c2[j]->length,voteOutput);
+					nmod_poly_clear(com_aux[i].c1[j]);
+					nmod_poly_clear(com_aux[i].c2[j]);
+					for (int w = 0; w < WIDTH; w++){
+						nmod_poly_clear(r_aux[i][w][j]);
+					}
+				}
+			}
+			fclose(voteOutput);
+		} else {
+			printf("ERRO ZKP\n");
+		}
 	}
 
 	/* TODO: Sign ZKP result and final tracking code */
 
-	for (int i = 0; i < VOTERS; i++) {
-		finalizeVoteTable(&vTable[i]);
+	for (int cont = 0; cont < CONTESTS; cont++) {
+		for (int i = 0; i < VOTERS; i++) {
+			finalizeVoteTable(&vTable[cont][i]);
+		}
 	}
-	commit_keyfree(key);
+	commit_keyfree(&key);
 	commit_finish();
 	flint_randclear(rand);
 	flint_cleanup();
@@ -896,7 +927,7 @@ static void onFinish (VoteTable *vTable, commitkey_t *key) {
 
 
 
-static void verifyVote (uint32_t vote, commitkey_t *key, pcrt_poly_t r[WIDTH], time_t *timer, uint8_t trackingCode[SHA512HashSize]) {
+void verifyVote (uint32_t vote, commitkey_t *key, pcrt_poly_t r[WIDTH], time_t *timer, uint8_t trackingCode[SHA512HashSize]) {
 	SHA512Context sha;
 	commit_t tmpCom;
 	nmod_poly_t m;
@@ -947,7 +978,7 @@ static void verifyVote (uint32_t vote, commitkey_t *key, pcrt_poly_t r[WIDTH], t
 	/* Compute new tracking code */
 	SHA512Reset(&sha);
 
-	SHA512Input(&sha, Hcurrent, SHA512HashSize);
+	SHA512Input(&sha, Hcurrent[0], SHA512HashSize);
 
 	SHA512Input(&sha, (const uint8_t*)&timerInt, 4);
 
@@ -967,47 +998,18 @@ static void verifyVote (uint32_t vote, commitkey_t *key, pcrt_poly_t r[WIDTH], t
 #ifdef MAIN
 int main(int argc, char *arg[]) {
 	FILE *resultadoCycles;
-  flint_rand_t rand;
-  commitkey_t key;
 	unsigned long long onVoterActiveCycles, onChallengeCycles;
-	commit_t com;
-	nmod_poly_t m,_m[VOTERS];
-	pcrt_poly_t r[WIDTH];
-  uint32_t vote;
-	uint8_t nextVoter;
-  int a=0;
+  	uint32_t vote;
 	char infoContest[]="Teste";
-	VoteTable vTable[VOTERS];
-	// uint8_t Q[] = "abc\0";
-	SHA512Context sha;
-	uint8_t trackingCode[SHA512HashSize];
-	uint8_t Teste[SHA512HashSize];
-	time_t timer;
 	int numVotos, numTest=1;
-	int flag=0;
 
-  // flint_randinit(rand);
-	// for (int i = 0; i < VOTERS; i++) {
-	// 	nmod_poly_init(_m[i], MODP);
-	// }
-	// nmod_poly_init(m,MODP);
-  // commit_setup();
-	// commit_sample_rand(m,rand);
-	// printf("%lld\n", m->alloc);
-	// printf("%lld\n", m->length);
-	// printf("%lld\n", m->mod.n);
-	//
-	//
-	// for (int i = 0; i < 100; i++) {
-	// 	printf("%2d %08llx\n", i, m->coeffs[i]);
-	// }
-	resultadoCycles = fopen("resultadoCiclos","a");
+  	resultadoCycles = fopen("resultadoCiclosSim","a");
 	if (resultadoCycles==NULL) {
 		printf("Erro arquivo\n");
 		return 0;
 	}
 
-	for (numVotos = 500; numVotos <= 3000; numVotos+=3500) {
+	for (numVotos = 100; numVotos <= 100; numVotos+=100) {
 		fprintf(resultadoCycles, "Numero Votos = %d, %d testes\n", numVotos, numTest);
 		fprintf(resultadoCycles, "    Setup;  onStart;onVoterActive;  onChallenge;    onFinish\n");
 		fflush(resultadoCycles);
@@ -1021,13 +1023,13 @@ int main(int argc, char *arg[]) {
 
 			bench_reset();
 			bench_before();
-			Setup(&key);
+			Setup();
 			bench_after();
 			fprintf(resultadoCycles, "%9lld;", bench_total());
 
 			bench_reset();
 			bench_before();
-			onStart (&key, infoContest, vTable);
+			onStart (infoContest);
 			bench_after();
 			fprintf(resultadoCycles, "%9lld;", bench_total());
 
@@ -1039,194 +1041,79 @@ int main(int argc, char *arg[]) {
 
 				bench_reset();
 				bench_before();
-				onVoterActive(vote, &com, m, &key, r, &timer, trackingCode);
+				onVoterActive(vote, 0);
 				bench_after();
 				onVoterActiveCycles+=bench_total();
 
-				//verifyVote (vote, &key, r, &timer, trackingCode);
+				getrandom(&vote, sizeof(vote), 0);
+				vote&=0x8FFFFFFF;
 
 				bench_reset();
 				bench_before();
-				onChallenge (TRUE, &vTable[voteNumber], &com, m, &key, r, &timer, trackingCode);
+				onVoterActive(vote, 1);
+				bench_after();
+				onVoterActiveCycles+=bench_total();
+
+				getrandom(&vote, sizeof(vote), 0);
+				vote&=0x8FFFFFFF;
+
+				bench_reset();
+				bench_before();
+				onVoterActive(vote, 2);
+				bench_after();
+				onVoterActiveCycles+=bench_total();
+
+				getrandom(&vote, sizeof(vote), 0);
+				vote&=0x8FFFFFFF;
+
+				bench_reset();
+				bench_before();
+				onVoterActive(vote, 3);
+				bench_after();
+				onVoterActiveCycles+=bench_total();
+
+				getrandom(&vote, sizeof(vote), 0);
+				vote&=0x8FFFFFFF;
+
+				bench_reset();
+				bench_before();
+				onVoterActive(vote, 4);
+				bench_after();
+				onVoterActiveCycles+=bench_total();
+
+				getrandom(&vote, sizeof(vote), 0);
+				vote&=0x8FFFFFFF;
+
+				bench_reset();
+				bench_before();
+				onVoterActive(vote, 5);
+				bench_after();
+				onVoterActiveCycles+=bench_total();
+
+				//check tracking code
+
+
+			// 	//verifyVote (vote, &key, r, &timer, trackingCode);
+
+				bench_reset();
+				bench_before();
+				onChallenge (TRUE);
 				bench_after();
 				onChallengeCycles+=bench_total();
+				
 			}
 
 			fprintf(resultadoCycles, "%13lld;%13lld;", onVoterActiveCycles,onChallengeCycles);
 
 			bench_reset();
 			bench_before();
-			onFinish(vTable, &key);
+			onFinish();
 			bench_after();
 			fprintf(resultadoCycles, "%12lld\n", bench_total());
 			fflush(resultadoCycles);
 		}
 	}
 	fclose (resultadoCycles);
-
-	// for (int i = 0; i < 20; i++){
-	// 	bench_reset();
-	// 	bench_before();
-	// 	do {
-	// 		flag=50;
-	// 		nmod_poly_randtest_not_zero(_m[i],rand,DEGREE);
-	// 		for (int j = 0; j < DEGREE; j++) {
-	// 			if (nmod_poly_get_coeff_ui(_m[i],j)==0) {
-	// 				flag--;
-	// 			}
-	// 		}
-	// 	} while (flag<0);
-	// 	bench_after();
-	// 	bench_print();
-	// 	printf("\n");
-	// 	printf("i = %d\n", i);
-	// 	nmod_poly_print(_m[i]);
-	// 	printf("\n\n");
-	// }
-	// bench_reset();
-	// bench_before();
-	// commit_sample_rand(_m[2],rand);
-	// bench_after();
-	// bench_print();
-	// printf("\n");
-	// nmod_poly_print(_m[2]);
-	// printf("\n");
-	// printf("\nRDV ordenado: \n");
-	// for (int i = voteNumber-10; i < voteNumber; i++) {
-	// 	printf("%u\n", RDV[i]);
-	// }
-	// printf("%u\n", RDV[voteNumber]);
-
-// printf("Total time = %lld cycles\n\n", cpuCycles);
-// printf("Avg time = %lld cycles\n\n", cpuCycles/numTest);
-//
-// for (int i = 0; i<2;i++){
-// 	// nmod_poly_print(vTable[i].vote);
-// 	printf("Hash ");
-// 	for (int j = 0; j < SHA512HashSize; j++) {
-// 		printf("%02x ", vTable[i].trackingCode[j]);
-// 	}
-// 	printf("\nTime %d\n", vTable[i].timer);
-//
-// }
-// printf("%d\n", voteNumber);
-
-
-	// for (int i = 0; i < HEIGHT; i++) {
-	// 	for (int j = 0; j < WIDTH; j++) {
-	// 		for (int k = 0; k < 2; k++) {
-	// 			nmod_poly_print(key.B1[i][j][k]);
-	// 		}
-	// 		printf("\n\n");
-	// 	}
-	// }
-	//
-	// for (int i = 0; i < WIDTH; i++) {
-	// 	for (int j = 0; j < 2; j++) {
-	// 		nmod_poly_print(key.b2[i][j]);
-	// 	}
-	// }
-
-	// SHA512Reset(&sha);
-	//
-	// SHA512Input(&sha, Q, strlen((char *)Q));
-	//
-	// SHA512Result(&sha, overlineQ);
-	//
-	// printf("\n\n\n");
-	// for(int i=0;i<SHA512HashSize;i++){
-	// 	printf("%02x", overlineQ[i]);
-	// 	if((i+1)%4==0){
-	// 		printf(" ");
-	// 	}
-	// }
-	// printf("\n\n");
-
-  // for(int i = 0; i < VOTERS; i++) {
-  //   nmod_poly_init(m[i], MODP);
-  //   nmod_poly_init(_m[i], MODP);
-  // }
-	//
-	//
-	// for (int i = 0; i < VOTERS; i++) {
-	// 	for (int w = 0; w < WIDTH; w++) {
-	//     for (int j = 0; j < 2; j++) {
-	//       nmod_poly_init(r[i][w][j], MODP);
-	//     }
-	//   }
-	// }
-	//
-	// voteNumber = 0;
-	//
-	//
-  // commit_keygen(&key, rand);
-	//
-	// // Unnecessary as flint_randinit always initializes to the same value. Remember to add again when truly randomly Initializing
-	// // chave = fopen("CommomKey","w");
-	// // for (int i = 0; i < HEIGHT; i++) {
-	// // 	for (int j = 0; j < WIDTH; j++) {
-	// // 		for (int k = 0; k < 2; k++) {
-	// // 			nmod_poly_fprint(chave, key.B1[i][j][k]);
-	// // 			fprintf(chave, "\n");
-	// // 		}
-	// // 	}
-	// // }
-	// // for (int i = 0; i < WIDTH; i++) {
-	// // 	for (int j = 0; j < 2; j++) {
-	// // 		nmod_poly_fprint(chave, key.b2[i][j]);
-	// // 		fprintf(chave, "\n");
-	// // 	}
-	// // }
-	// // fclose(chave);
-	//
-	//
-	// do {
-	// 	voteCasting(&com[voteNumber], m[voteNumber], &key, r[voteNumber]);
-	// 	// printf("\nVerificar voto? (0 - nao, 1 - sim)?: ");
-	// 	// scanf("%hhd", &nextVoter);
-	// 	// if (nextVoter) {
-	// 	// 	checkSpoil(&key);
-	// 	// }
-	// 	printf("\n\nProximo eleitor (0 - nao, 1 - sim)?: ");
-	// 	scanf("%hhd", &nextVoter);
-	// } while(nextVoter && voteNumber < VOTERS);
-	//
-	//
-	// // Shuffle Function
-  // for (int i = 0; i < voteNumber; i++) {
-	// 	nmod_poly_set(_m[i], m[(i + 10) % voteNumber]);
-	// }
-	//
-  // bench_reset();
-  // bench_before();
-  // a=run(com, m, _m, r, &key, rand, voteNumber);
-  // bench_after();
-  // printf("\n\n\nTime for shuffle: ");
-  // bench_print();
-  // if (a) {
-	// 	printf("ZKP de Shuffle - Sucesso\n");
-	// }
-	// else {
-	// 	printf("ZKP de Shuffle - Fracassp\n");
-	// }
-	//
-  // commit_keyfree(&key);
-  // for (int i = 0; i < VOTERS; i++) {
-  //   commit_free(&com[i]);
-  // 	nmod_poly_clear(m[i]);
-	// 	nmod_poly_clear(_m[i]);
-  // }
-	//
-	// for (int i = 0; i < VOTERS; i++){
-	// 	for (int w = 0; w < WIDTH; w++) {
-	// 		for (int j = 0; j < 2; j++) {
-	// 			nmod_poly_clear(r[i][w][j]);
-	// 		}
-	// 	}
-	// }
-	//commit_finish();
-	//flint_randclear(rand);
-	//flint_cleanup();
 
   return 0;
 }

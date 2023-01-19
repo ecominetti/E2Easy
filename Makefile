@@ -30,10 +30,15 @@ voting: voting.c commit.c ${TEST} ${BENCH}
 	${CPP} ${CFLAGS} -c commit.c -o commit.o ${LIBS}
 	${CPP} ${CFLAGS} -DMAIN voting.c commit.o sha224-256.c sha384-512.c ${GAUSSIAN} ${TEST} ${BENCH} -o voting ${LIBS}
 
+votingSimulator: votingSimulator.c commit.c ${TEST} ${BENCH}
+	${CPP} ${CFLAGS} -DSIGMA_PARAM=SIGMA_C -c gaussian_ct.cpp -o gaussian.o
+	${CPP} ${CFLAGS} -c commit.c -o commit.o ${LIBS}
+	${CPP} ${CFLAGS} -DMAIN votingSimulator.c commit.o sha224-256.c sha384-512.c ${GAUSSIAN} ${TEST} ${BENCH} -o votingSimulator ${LIBS}
+
 spoilCheck: spoilCheck.c commit.c ${TEST} ${BENCH}
 	${CPP} ${CFLAGS} -DSIGMA_PARAM=SIGMA_C -c gaussian_ct.cpp -o gaussian.o
 	${CPP} ${CFLAGS} -c commit.c -o commit.o ${LIBS}
 	${CPP} ${CFLAGS} -DMAIN spoilCheck.c commit.o sha224-256.c ${GAUSSIAN} ${TEST} ${BENCH} -o spoilCheck ${LIBS}
 
 clean:
-	rm *.o commit encrypt vericrypt shuffle voting spoilCheck
+	rm *.o commit encrypt vericrypt shuffle voting spoilCheck votingSimulator
