@@ -105,6 +105,13 @@ void pcrt_poly_rec(nmod_poly_t c, pcrt_poly_t a) {
 	nmod_poly_rem(c, c, cyclo_poly);
 }
 
+// Convert polynomial to CRT representation.
+void pcrt_poly_convert(pcrt_poly_t a, nmod_poly_t c) {
+	for (int j = 0; j < 2; j++) {
+		nmod_poly_rem(a[j], c, irred[j]);
+	}
+}
+
 // Compute squared l2-norm.
 uint64_t commit_norm2_sqr(nmod_poly_t r) {
 	int64_t norm = 0;

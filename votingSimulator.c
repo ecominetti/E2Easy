@@ -40,6 +40,11 @@ static pcrt_poly_t r[CONTESTS][WIDTH];
 static time_t timer[CONTESTS];
 static uint8_t trackingCode[CONTESTS][SHA512HashSize];
 static uint8_t voteContestCasted;
+static uint8_t numberContests;
+static uint8_t QRCodeTrackingCode[CONTESTS*(SHA512HashSize+sizeof(uint32_t))];
+static uint8_t QRCodeSpoilTrackingCode[CONTESTS*SHA512HashSize];
+static uint8_t QRCodeSpoilNonce[CONTESTS*WIDTH*(DEGREE/4)]; // Degree*2/8
+static uint32_t QRCodeSpoilVotes[CONTESTS];
 
 static void initializeVoteTable(VoteTable *vTable){
 	for (int i = 0; i < 2; i++) {
@@ -597,11 +602,13 @@ void Setup() {
 	flint_cleanup();
 }
 
-void onStart (char *infoContest) {
+void onStart (uint8_t infoContest) {
 	uint8_t Q[] = "Teste\0";
 	SHA512Context sha;
 	commitkey_t *keyP = &key;
 	uint8_t overlineQ[SHA512HashSize];
+
+	numberContests = 0;
 
 	/* Start commitment alg */
 	commit_setup();
@@ -632,8 +639,10 @@ void onStart (char *infoContest) {
 	SHA512Result(&sha, overlineQ);
 
 	/*TODO: Process infoContest*/
+	numberContests = infoContest;
+	
 
-	/* Creat H0 for each contest table */
+	/* Create H0 for each contest table */
 	for (uint8_t i = 0; i < CONTESTS; i++)
 	{
 		SHA512Reset(&sha);
@@ -679,84 +688,100 @@ void onVoterActive(uint32_t vote, uint8_t cont) {
 	uint64_t *coeffs;
 	int aux;
 
-	/* Check if the contest provided is within range*/
-	if (cont > CONTESTS || cont < 0) {
-		cont = 0;
+	/* Check if the contest provided is within range and enabled*/
+	if (((numberContests >> cont) & 1) != 1) {
+		printf("Error: contest not enabled\n");
 	}
+	else {
 
-	/* Initialize polinomial m,r to receive the vote and random to create the commitment */
-	nmod_poly_init(m[cont], MODP);
-	nmod_poly_zero(m[cont]);
-	for (int i = 0; i < WIDTH; i++) {
-		for (int j = 0; j < 2; j++) {
-			nmod_poly_init(r[cont][i][j], MODP);
-			nmod_poly_zero(r[cont][i][j]);
+		// if (cont > CONTESTS || cont < 0) {
+		// 	cont = 0;
+		// }
+
+		/* Initialize polinomial m,r to receive the vote and random to create the commitment */
+		nmod_poly_init(m[cont], MODP);
+		nmod_poly_zero(m[cont]);
+		for (int i = 0; i < WIDTH; i++) {
+			for (int j = 0; j < 2; j++) {
+				nmod_poly_init(r[cont][i][j], MODP);
+				nmod_poly_zero(r[cont][i][j]);
+			}
 		}
+
+		/* Set the coefficient 0 of m as the vote value */
+		nmod_poly_set_coeff_ui(m[cont], 0, vote);
+
+		/* Draw r randomly and create the commitment */
+		for (int i = 0; i < WIDTH; i++) {
+			commit_sample_short_crt(r[cont][i]);
+		}
+		commit_doit(&com[cont], m[cont], &key, r[cont]);
+
+
+		/* Set timer as current time */
+		time(&timer[cont]);
+
+		timerInt=(uint32_t)timer[cont];
+
+		/* Parse the commitment to coeffs variable */
+		aux = 0;
+		coeffs = (uint64_t*)malloc(sizeof(uint64_t)*(nmod_poly_length(com[cont].c1[0])+
+														nmod_poly_length(com[cont].c1[1])+
+														nmod_poly_length(com[cont].c2[0])+
+															nmod_poly_length(com[cont].c2[1])));
+
+		for (int i = 0; i < nmod_poly_length(com[cont].c1[0]); i++){
+			coeffs[i] = nmod_poly_get_coeff_ui(com[cont].c1[0],i);
+		}
+		aux = nmod_poly_length(com[cont].c1[0]);
+
+		for (int i = 0; i < nmod_poly_length(com[cont].c1[1]); i++){
+			coeffs[i+aux] = nmod_poly_get_coeff_ui(com[cont].c1[1],i);
+		}
+		aux+=nmod_poly_length(com[cont].c1[1]);
+
+		for (int i = 0; i < nmod_poly_length(com[cont].c2[0]); i++){
+			coeffs[i+aux] = nmod_poly_get_coeff_ui(com[cont].c2[0],i);
+		}
+		aux+=nmod_poly_length(com[cont].c2[0]);
+
+		for (int i = 0; i < nmod_poly_length(com[cont].c2[1]); i++){
+			coeffs[i+aux] = nmod_poly_get_coeff_ui(com[cont].c2[1],i);
+		}
+		aux+=nmod_poly_length(com[cont].c2[1]);
+
+
+		/* Compute tracking code */
+		SHA512Reset(&sha);
+
+		SHA512Input(&sha, Hcurrent[cont], SHA512HashSize);
+
+		SHA512Input(&sha, (const uint8_t*)&timerInt, 4);
+
+		SHA512Input(&sha, (const uint8_t*)coeffs, aux * sizeof(uint64_t));
+
+		SHA512Result(&sha, trackingCode[cont]);
+
+		free(coeffs);
+
+		/* Inform that a vote was casted for this contest */
+		voteContestCasted += (0x01 << cont);
+
+		/* TODO: output tracking code and timer */
+		// for (int a = 0; a < SHA512HashSize; a++){
+		// 	printf("%02x ", trackingCode[cont][a]);
+		// }
+		// printf("\n");
+		// printf("%llx\n", timer[cont]);
 	}
-
-	/* Set the coefficient 0 of m as the vote value */
-	nmod_poly_set_coeff_ui(m[cont], 0, vote);
-
-	/* Draw r randomly and create the commitment */
-	for (int i = 0; i < WIDTH; i++) {
-		commit_sample_short_crt(r[cont][i]);
-	}
-	commit_doit(&com[cont], m[cont], &key, r[cont]);
-
-
-	/* Set timer as current time */
-	time(&timer[cont]);
-
-	timerInt=(uint32_t)timer[cont];
-
-	/* Parse the commitment to coeffs variable */
-	aux = 0;
-	coeffs = (uint64_t*)malloc(sizeof(uint64_t)*(nmod_poly_length(com[cont].c1[0])+
-													  nmod_poly_length(com[cont].c1[1])+
-													   nmod_poly_length(com[cont].c2[0])+
-													     nmod_poly_length(com[cont].c2[1])));
-
-	for (int i = 0; i < nmod_poly_length(com[cont].c1[0]); i++){
-		coeffs[i] = nmod_poly_get_coeff_ui(com[cont].c1[0],i);
-	}
-	aux = nmod_poly_length(com[cont].c1[0]);
-
-	for (int i = 0; i < nmod_poly_length(com[cont].c1[1]); i++){
-		coeffs[i+aux] = nmod_poly_get_coeff_ui(com[cont].c1[1],i);
-	}
-	aux+=nmod_poly_length(com[cont].c1[1]);
-
-	for (int i = 0; i < nmod_poly_length(com[cont].c2[0]); i++){
-		coeffs[i+aux] = nmod_poly_get_coeff_ui(com[cont].c2[0],i);
-	}
-	aux+=nmod_poly_length(com[cont].c2[0]);
-
-	for (int i = 0; i < nmod_poly_length(com[cont].c2[1]); i++){
-		coeffs[i+aux] = nmod_poly_get_coeff_ui(com[cont].c2[1],i);
-	}
-	aux+=nmod_poly_length(com[cont].c2[1]);
-
-
-	/* Compute tracking code */
-	SHA512Reset(&sha);
-
-	SHA512Input(&sha, Hcurrent[cont], SHA512HashSize);
-
-	SHA512Input(&sha, (const uint8_t*)&timerInt, 4);
-
-	SHA512Input(&sha, (const uint8_t*)coeffs, aux * sizeof(uint64_t));
-
-	SHA512Result(&sha, trackingCode[cont]);
-
-	free(coeffs);
-
-	/* Inform that a vote was casted for this contest */
-	voteContestCasted += (0x01 << cont);
-
-	/* TODO: output tracking code and timer */
 }
 
 void onChallenge (bool cast) {
+	nmod_poly_t rnd;
+	uint32_t coeffValue;
+	uint8_t coeffSeq[DEGREE*2/8];
+	uint16_t index;
+	uint8_t numberActiveContests=0;
 
 	/* If vote is cast, store it on table */
 	if (cast){
@@ -790,18 +815,72 @@ void onChallenge (bool cast) {
 
 	} else {
 		/* Benaloh Challenge: output  Hcurrent, r and vote. Discard everything*/
-		for (uint8_t cont = 0; cont < CONTESTS && ((voteContestCasted << cont) & 1) == 1; cont++) {
-			for (int i = 0; i < WIDTH; i++) {
-				for (int j = 0; j < 2; j++) {
-					nmod_poly_print(r[cont][i][j]);
-					nmod_poly_zero(r[cont][i][j]);
+
+		/* Initilize QRCodeVectors*/
+		for (int i = 0; i < CONTESTS*WIDTH*(DEGREE/4); i++) {
+			QRCodeSpoilNonce[i]=0x00;
+		}
+		for (int i = 0; i < CONTESTS; i++) {
+			QRCodeSpoilVotes[i]=0x00;
+		}
+		for (int i = 0; i < CONTESTS*SHA512HashSize; i++) {
+			QRCodeSpoilTrackingCode[i]=0x00;
+		}
+
+		for (uint8_t cont = 0; cont < CONTESTS; cont++) {
+			if (((voteContestCasted >> cont) & 1) == 1) {
+				for (int i = 0; i < WIDTH; i++) {
+					for (index = 0; index < (DEGREE*2/8); index++) {
+						coeffSeq[index]=0x00;
+					}
+					index = 0;
+					nmod_poly_init(rnd, MODP);
+					nmod_poly_zero(rnd);
+					pcrt_poly_rec(rnd, r[cont][i]);
+
+					// printf("\n\n");
+					// nmod_poly_print(rnd);
+					// printf("\n\n");
+
+					for (int coeff = 0; coeff < DEGREE; coeff++) {
+						coeffValue = nmod_poly_get_coeff_ui(rnd,coeff);
+						coeffValue++;
+						coeffValue %= MODP;
+						coeffValue &= 0xFF;
+						index=floor(coeff/4);
+						coeffSeq[index]|=((uint8_t)coeffValue << (2*(coeff%4)));
+						QRCodeSpoilNonce[numberActiveContests*(WIDTH*(DEGREE*2/8))+i*(DEGREE*2/8)+index] |= 
+																		((uint8_t)coeffValue << (2*(coeff%4)));
+						// printf("%02x ", coeffValue);
+					}
+				
+					// printf("\n\n");
+					// for (int a = 0; a < 256; a++){
+					// 	printf("%02x ",coeffSeq[a]);
+					// }
+					// printf("\n\n\n");
+					// for (int a = numberActiveContests*(WIDTH*(DEGREE*2/8))+i*(DEGREE*2/8); a < numberActiveContests*(WIDTH*(DEGREE*2/8))+i*(DEGREE*2/8)+256; a++){
+					// 	printf("%02x ",QRCodeSpoilNonce[a]);
+					// }
+					// printf("\n\n\n");
+					for (int j = 0; j < 2; j++) {
+						nmod_poly_zero(r[cont][i][j]);
+					}
+					nmod_poly_clear(rnd);
+
 				}
+				for (int i = 0; i < SHA512HashSize; i++) {
+					QRCodeSpoilTrackingCode[numberActiveContests*SHA512HashSize+i] =
+													Hcurrent[cont][i];
+					// printf("%02x ",Hcurrent[cont][i]);
+					// printf("%02x ",QRCodeSpoilTrackingCode[numberActiveContests*SHA512HashSize+i]);
+					trackingCode[cont][i]=0x00;
+				}
+				QRCodeSpoilVotes[numberActiveContests]=nmod_poly_get_coeff_ui(m[cont], 0);
+				// printf("\n%lld\n", nmod_poly_get_coeff_ui(m[cont], 0));
+				// printf("%lld\n", QRCodeSpoilVotes[numberActiveContests]);
+				numberActiveContests++;
 			}
-			for (int i = 0; i < SHA512HashSize; i++) {
-				printf("%02x ",Hcurrent[cont][i]);
-				trackingCode[cont][i]=0x00;
-			}
-			printf("\n%lld\n", nmod_poly_get_coeff_ui(m[cont], 0));
 		}
 	}
 	/* free commitment and clear message poly */
@@ -833,81 +912,79 @@ void onFinish () {
 
 	flint_randinit(rand);
 	for (uint8_t cont = 0; cont < CONTESTS; cont++) {
-		/* Initialize auxiliary variables */
-		for (int i = 0; i < voteNumber; i++) {
-			for (int j = 0; j < 2; j++) {
-				nmod_poly_init(com_aux[i].c1[j], MODP);
-				nmod_poly_init(com_aux[i].c2[j], MODP);
-				nmod_poly_zero(com_aux[i].c1[j]);
-				nmod_poly_zero(com_aux[i].c2[j]);
-				for (int w = 0; w < WIDTH; w++){
-					nmod_poly_init(r_aux[i][w][j], MODP);
-					nmod_poly_zero(r_aux[i][w][j]);
-				}
-			}
-
-			nmod_poly_init(m_aux[i], MODP);
-			nmod_poly_zero(m_aux[i]);
-			nmod_poly_init(_m[i], MODP);
-			nmod_poly_zero(_m[i]);
-		}
-
-		/* Compute Hlast */
-		SHA512Reset(&sha);
-
-		SHA512Input(&sha, Hcurrent[cont], SHA512HashSize);
-
-		SHA512Input(&sha, (const uint8_t*)closeSignal, strlen((char *)closeSignal));
-
-		SHA512Result(&sha, Hcurrent[cont]);
-
-		/* Parse vTable variables to auxiliary variables */
-		for (int i = 0; i < voteNumber; i++) {
-			for (int j = 0; j < 2; j++) {
-				nmod_poly_set(com_aux[i].c1[j], vTable[cont][i].commit.c1[j]);
-				nmod_poly_set(com_aux[i].c2[j], vTable[cont][i].commit.c2[j]);
-				for (int w = 0; w < WIDTH; w++){
-					nmod_poly_set(r_aux[i][w][j], vTable[cont][i].r[w][j]);
-				}
-			}
-			nmod_poly_set(m_aux[i], vTable[cont][i].vote);
-			nmod_poly_set_coeff_ui(_m[i], 0, RDV[cont][i]);
-		}
-
-		snprintf(outputFileName,20,"ZKPOutput_Cont%d", cont);
-
-		bench_reset();
-		bench_before();
-		res=run(com_aux, m_aux, _m, r_aux, &key, rand, voteNumber, outputFileName);
-		bench_after();
-		printf("B ZKP = %lld\n", bench_total());
-
-		/* Clear auxiliary variables and commit-vote-opening association*/
-		if (res) {
-			//printf("ZKP Successful\n" );
-			snprintf(outputFileName,20,"voteOutput_Cont%d", cont);
-			voteOutput = fopen(outputFileName, "w");
-			fwrite(H0[cont], sizeof(uint8_t), SHA512HashSize,voteOutput);
-			fwrite(Hcurrent[cont], sizeof(uint8_t), SHA512HashSize,voteOutput);
+		if (((numberContests >> cont) & 1) == 1) {
+			/* Initialize auxiliary variables */
 			for (int i = 0; i < voteNumber; i++) {
-				nmod_poly_clear(m_aux[i]);
-				nmod_poly_clear(_m[i]);
-				fwrite(&RDV[cont][i], sizeof(uint32_t), 1,voteOutput);
-				fwrite(vTable[cont][i].trackingCode, sizeof(uint8_t), SHA512HashSize,voteOutput);
-				fwrite(&vTable[cont][i].timer, sizeof(uint32_t), 1,voteOutput);
 				for (int j = 0; j < 2; j++) {
-					fwrite(vTable[cont][i].commit.c1[j]->coeffs, sizeof(uint32_t), vTable[cont][i].commit.c1[j]->length,voteOutput);
-					fwrite(vTable[cont][i].commit.c2[j]->coeffs, sizeof(uint32_t), vTable[cont][i].commit.c2[j]->length,voteOutput);
-					nmod_poly_clear(com_aux[i].c1[j]);
-					nmod_poly_clear(com_aux[i].c2[j]);
+					nmod_poly_init(com_aux[i].c1[j], MODP);
+					nmod_poly_init(com_aux[i].c2[j], MODP);
+					nmod_poly_zero(com_aux[i].c1[j]);
+					nmod_poly_zero(com_aux[i].c2[j]);
 					for (int w = 0; w < WIDTH; w++){
-						nmod_poly_clear(r_aux[i][w][j]);
+						nmod_poly_init(r_aux[i][w][j], MODP);
+						nmod_poly_zero(r_aux[i][w][j]);
 					}
 				}
+
+				nmod_poly_init(m_aux[i], MODP);
+				nmod_poly_zero(m_aux[i]);
+				nmod_poly_init(_m[i], MODP);
+				nmod_poly_zero(_m[i]);
 			}
-			fclose(voteOutput);
-		} else {
-			printf("ERRO ZKP\n");
+
+			/* Compute Hlast */
+			SHA512Reset(&sha);
+
+			SHA512Input(&sha, Hcurrent[cont], SHA512HashSize);
+
+			SHA512Input(&sha, (const uint8_t*)closeSignal, strlen((char *)closeSignal));
+
+			SHA512Result(&sha, Hcurrent[cont]);
+
+			/* Parse vTable variables to auxiliary variables */
+			for (int i = 0; i < voteNumber; i++) {
+				for (int j = 0; j < 2; j++) {
+					nmod_poly_set(com_aux[i].c1[j], vTable[cont][i].commit.c1[j]);
+					nmod_poly_set(com_aux[i].c2[j], vTable[cont][i].commit.c2[j]);
+					for (int w = 0; w < WIDTH; w++){
+						nmod_poly_set(r_aux[i][w][j], vTable[cont][i].r[w][j]);
+					}
+				}
+				nmod_poly_set(m_aux[i], vTable[cont][i].vote);
+				nmod_poly_set_coeff_ui(_m[i], 0, RDV[cont][i]);
+			}
+
+			snprintf(outputFileName,20,"ZKPOutput_Cont%d", cont);
+
+			res=run(com_aux, m_aux, _m, r_aux, &key, rand, voteNumber, outputFileName);
+
+			/* Clear auxiliary variables and commit-vote-opening association*/
+			if (res) {
+				//printf("ZKP Successful\n" );
+				snprintf(outputFileName,20,"voteOutput_Cont%d", cont);
+				voteOutput = fopen(outputFileName, "w");
+				fwrite(H0[cont], sizeof(uint8_t), SHA512HashSize,voteOutput);
+				fwrite(Hcurrent[cont], sizeof(uint8_t), SHA512HashSize,voteOutput);
+				for (int i = 0; i < voteNumber; i++) {
+					nmod_poly_clear(m_aux[i]);
+					nmod_poly_clear(_m[i]);
+					fwrite(&RDV[cont][i], sizeof(uint32_t), 1,voteOutput);
+					fwrite(vTable[cont][i].trackingCode, sizeof(uint8_t), SHA512HashSize,voteOutput);
+					fwrite(&vTable[cont][i].timer, sizeof(uint32_t), 1,voteOutput);
+					for (int j = 0; j < 2; j++) {
+						fwrite(vTable[cont][i].commit.c1[j]->coeffs, sizeof(uint32_t), vTable[cont][i].commit.c1[j]->length,voteOutput);
+						fwrite(vTable[cont][i].commit.c2[j]->coeffs, sizeof(uint32_t), vTable[cont][i].commit.c2[j]->length,voteOutput);
+						nmod_poly_clear(com_aux[i].c1[j]);
+						nmod_poly_clear(com_aux[i].c2[j]);
+						for (int w = 0; w < WIDTH; w++){
+							nmod_poly_clear(r_aux[i][w][j]);
+						}
+					}
+				}
+				fclose(voteOutput);
+			} else {
+				printf("ERRO ZKP\n");
+			}
 		}
 	}
 
@@ -925,73 +1002,208 @@ void onFinish () {
 
 }
 
+void createQRTrackingCode() {
+	uint8_t numberActiveContests = 0;
+
+	for (uint8_t cont = 0; cont < CONTESTS; cont++) {
+			if (((numberContests >> cont) & 1) == 1) {
+				for (int i = 0; i < SHA512HashSize; i++) {
+					QRCodeTrackingCode[numberActiveContests*(SHA512HashSize+sizeof(uint32_t))+i] =
+								trackingCode[cont][i];
+				}
+				for (int j = 0; j < 4; j++){
+					QRCodeTrackingCode[SHA512HashSize+numberActiveContests*(SHA512HashSize+sizeof(uint32_t))+j] = 
+								(timer[cont]>>(j*8))&0xFF;
+				}
+				numberActiveContests++;
+			}
+	}
+	// for (int i = 0; i<numberActiveContests*(SHA512HashSize+sizeof(uint32_t));i++) {
+	// 	printf("%02x ", QRCodeTrackingCode[i]);
+	// }
+	// printf("\n\n");
+
+}
 
 
-void verifyVote (uint32_t vote, commitkey_t *key, pcrt_poly_t r[WIDTH], time_t *timer, uint8_t trackingCode[SHA512HashSize]) {
+
+void verifyVote (uint8_t *QRTrack, uint8_t *QRSpoilTrack, uint8_t *QRSpoilNon, uint32_t *QRSpoilVot) {
 	SHA512Context sha;
-	commit_t tmpCom;
-	nmod_poly_t m;
-	uint32_t timerInt;
+	commit_t tmpCom[CONTESTS];
+	nmod_poly_t _m[CONTESTS];
+	nmod_poly_t aux;
+	uint32_t timerInt[CONTESTS];
+	uint32_t coeffValue;
 	uint64_t *coeffs;
-	uint8_t newTrCode[SHA512HashSize];
-	int aux;
+	uint8_t newTrCode[CONTESTS][SHA512HashSize];
+	pcrt_poly_t rnd[CONTESTS][WIDTH];
+	int index;
+	int verified=TRUE;
 
-	nmod_poly_init(m, MODP);
-	nmod_poly_zero(m);
+	uint8_t QRTrackingCode[CONTESTS*(SHA512HashSize+sizeof(uint32_t))];
+	uint8_t QRSpoilTrackingCode[CONTESTS*SHA512HashSize];
+	uint8_t QRSpoilNonce[CONTESTS*WIDTH*(DEGREE/4)]; // Degree*2/8
+	uint32_t QRSpoilVotes[CONTESTS];
+	uint8_t numberActiveContests=0;
 
-	nmod_poly_set_coeff_ui(m, 0, vote);
-
-	/* Compute commit from the vote and the received r */
-	commit_doit(&tmpCom, m, key, r);
-
-
-	/* Parse the commitment to coeffs variable */
-	aux = 0;
-	coeffs = (uint64_t*)malloc(sizeof(uint64_t)*(nmod_poly_length(tmpCom.c1[0])+
-																						   nmod_poly_length(tmpCom.c1[1])+
-																						   nmod_poly_length(tmpCom.c2[0])+
-																					     nmod_poly_length(tmpCom.c2[1])));
-
-	for (int i = 0; i < nmod_poly_length(tmpCom.c1[0]); i++){
-		coeffs[i] = nmod_poly_get_coeff_ui(tmpCom.c1[0],i);
+	/* Initialize internal vectors with external vectors*/
+	for (uint8_t cont = 0; cont < CONTESTS; cont++) {
+			if (((numberContests >> cont) & 1) == 1) {
+				numberActiveContests++;
+			}
+			nmod_poly_init(_m[cont], MODP);
+			nmod_poly_zero(_m[cont]);
 	}
-	aux = nmod_poly_length(tmpCom.c1[0]);
+	memmove(QRTrackingCode,QRTrack,numberActiveContests*(SHA512HashSize+sizeof(uint32_t)));
+	memmove(QRSpoilTrackingCode,QRSpoilTrack,numberActiveContests*SHA512HashSize);
+	memmove(QRSpoilNonce, QRSpoilNon, numberActiveContests*WIDTH*(DEGREE/4));
+	memmove(QRSpoilVotes, QRSpoilVot, numberActiveContests*4);
 
-	for (int i = 0; i < nmod_poly_length(tmpCom.c1[1]); i++){
-		coeffs[i+aux] = nmod_poly_get_coeff_ui(tmpCom.c1[1],i);
-	}
-	aux+=nmod_poly_length(tmpCom.c1[1]);
-
-	for (int i = 0; i < nmod_poly_length(tmpCom.c2[0]); i++){
-		coeffs[i+aux] = nmod_poly_get_coeff_ui(tmpCom.c2[0],i);
-	}
-	aux+=nmod_poly_length(tmpCom.c2[0]);
-
-	for (int i = 0; i < nmod_poly_length(tmpCom.c2[1]); i++){
-		coeffs[i+aux] = nmod_poly_get_coeff_ui(tmpCom.c2[1],i);
-	}
-	aux+=nmod_poly_length(tmpCom.c2[1]);
-
-	timerInt=(uint32_t)*timer;
-
-
-	/* Compute new tracking code */
-	SHA512Reset(&sha);
-
-	SHA512Input(&sha, Hcurrent[0], SHA512HashSize);
-
-	SHA512Input(&sha, (const uint8_t*)&timerInt, 4);
-
-	SHA512Input(&sha, (const uint8_t*)coeffs, aux * sizeof(uint64_t));
-
-	SHA512Result(&sha, newTrCode);
-
-	/* Check if computed tracking code matches the received tracking code */
-	for(int j=0;j<SHA512HashSize;j++){
-		if(trackingCode[j]!=newTrCode[j]){
-			printf("ERROR\n");
+	for (uint8_t cont = 0; cont < numberActiveContests; cont++) {
+		for (int i = 0; i < WIDTH; i++) {
+			for (int j = 0; j < 2; j++) {
+				nmod_poly_init(rnd[cont][i][j], MODP);
+				nmod_poly_zero(rnd[cont][i][j]);
+			}
 		}
+		for (int i = 0; i < WIDTH; i++) {
+			nmod_poly_init(aux, MODP);
+			nmod_poly_zero(aux);
+			for (int coeff = 0; coeff < DEGREE; coeff++) {
+				index=floor(coeff/4);
+				coeffValue = QRSpoilNonce[cont*(WIDTH*(DEGREE*2/8))+i*(DEGREE*2/8)+index] >> (2*(coeff%4));
+				coeffValue &= 0x03; //only the two first bits
+				coeffValue += (MODP-1);
+				nmod_poly_set_coeff_ui(aux,coeff,coeffValue);
+			}
+			pcrt_poly_convert(rnd[cont][i], aux);
+		}
+
+		timerInt[cont] = QRTrackingCode[SHA512HashSize+cont*(SHA512HashSize+sizeof(uint32_t))] |
+					QRTrackingCode[SHA512HashSize+cont*(SHA512HashSize+sizeof(uint32_t))+1]<<8 |
+						QRTrackingCode[SHA512HashSize+cont*(SHA512HashSize+sizeof(uint32_t))+2]<<16 |
+							QRTrackingCode[SHA512HashSize+cont*(SHA512HashSize+sizeof(uint32_t))+3]<<24;
+		nmod_poly_set_coeff_ui(_m[cont], 0, QRSpoilVotes[cont]);
+		// printf("\n%lld\n", QRCodeSpoilVotes[cont]);
+		// printf("\n%lld\n", QRSpoilVotes[cont]);
+		// printf("\n");
+		// nmod_poly_print(_m[cont]);
+		// printf("\n%llx\n", timerInt[cont]);
+
+		commit_doit(&tmpCom[cont], _m[cont], &key, rnd[cont]);
+
+		/* Parse the commitment to coeffs variable */
+		index = 0;
+		coeffs = (uint64_t*)malloc(sizeof(uint64_t)*(nmod_poly_length(tmpCom[cont].c1[0])+
+														nmod_poly_length(tmpCom[cont].c1[1])+
+														nmod_poly_length(tmpCom[cont].c2[0])+
+															nmod_poly_length(tmpCom[cont].c2[1])));
+
+		for (int i = 0; i < nmod_poly_length(tmpCom[cont].c1[0]); i++){
+			coeffs[i] = nmod_poly_get_coeff_ui(tmpCom[cont].c1[0],i);
+		}
+		index = nmod_poly_length(tmpCom[cont].c1[0]);
+
+		for (int i = 0; i < nmod_poly_length(tmpCom[cont].c1[1]); i++){
+			coeffs[i+index] = nmod_poly_get_coeff_ui(tmpCom[cont].c1[1],i);
+		}
+		index+=nmod_poly_length(tmpCom[cont].c1[1]);
+
+		for (int i = 0; i < nmod_poly_length(tmpCom[cont].c2[0]); i++){
+			coeffs[i+index] = nmod_poly_get_coeff_ui(tmpCom[cont].c2[0],i);
+		}
+		index+=nmod_poly_length(tmpCom[cont].c2[0]);
+
+		for (int i = 0; i < nmod_poly_length(tmpCom[cont].c2[1]); i++){
+			coeffs[i+index] = nmod_poly_get_coeff_ui(tmpCom[cont].c2[1],i);
+		}
+		index+=nmod_poly_length(tmpCom[cont].c2[1]);
+
+
+		/* Compute tracking code */
+		SHA512Reset(&sha);
+
+		SHA512Input(&sha, &QRSpoilTrackingCode[cont*SHA512HashSize], SHA512HashSize);
+
+		SHA512Input(&sha, (const uint8_t*)&timerInt[cont], 4);
+
+		SHA512Input(&sha, (const uint8_t*)coeffs, index * sizeof(uint64_t));
+
+		SHA512Result(&sha, newTrCode[cont]);
+
+		free(coeffs);
+		for (int a = 0; a < SHA512HashSize; a++){
+			if(newTrCode[cont][a]!=QRTrackingCode[cont*(SHA512HashSize+sizeof(uint32_t))+a]) {
+				verified=FALSE;
+			}
+			// printf("%02x ", newTrCode[cont][a]);
+		}
+		// printf("\n%d\n",verified);
+		// for (int a = 0; a < SHA512HashSize; a++){
+		// 	printf("%02x ", QRSpoilTrackingCode[cont*SHA512HashSize+a]);
+		// }
+		// printf("\n");
+		// printf("%llx %d\n", timerInt[cont], cont);
 	}
+	if (verified==TRUE){
+		printf("(SUCESSO) Tracking Code corresponde aos votos\n");
+	} else {
+		printf("(ERRO) Tracking Code nao corresponde aos votos\n");
+	}
+	
+	
+
+	// /* Compute commit from the vote and the received r */
+	// commit_doit(&tmpCom, m, key, r);
+
+
+	// /* Parse the commitment to coeffs variable */
+	// aux = 0;
+	// coeffs = (uint64_t*)malloc(sizeof(uint64_t)*(nmod_poly_length(tmpCom.c1[0])+
+	// 																					   nmod_poly_length(tmpCom.c1[1])+
+	// 																					   nmod_poly_length(tmpCom.c2[0])+
+	// 																				     nmod_poly_length(tmpCom.c2[1])));
+
+	// for (int i = 0; i < nmod_poly_length(tmpCom.c1[0]); i++){
+	// 	coeffs[i] = nmod_poly_get_coeff_ui(tmpCom.c1[0],i);
+	// }
+	// aux = nmod_poly_length(tmpCom.c1[0]);
+
+	// for (int i = 0; i < nmod_poly_length(tmpCom.c1[1]); i++){
+	// 	coeffs[i+aux] = nmod_poly_get_coeff_ui(tmpCom.c1[1],i);
+	// }
+	// aux+=nmod_poly_length(tmpCom.c1[1]);
+
+	// for (int i = 0; i < nmod_poly_length(tmpCom.c2[0]); i++){
+	// 	coeffs[i+aux] = nmod_poly_get_coeff_ui(tmpCom.c2[0],i);
+	// }
+	// aux+=nmod_poly_length(tmpCom.c2[0]);
+
+	// for (int i = 0; i < nmod_poly_length(tmpCom.c2[1]); i++){
+	// 	coeffs[i+aux] = nmod_poly_get_coeff_ui(tmpCom.c2[1],i);
+	// }
+	// aux+=nmod_poly_length(tmpCom.c2[1]);
+
+	// timerInt=(uint32_t)*timer;
+
+
+	// /* Compute new tracking code */
+	// SHA512Reset(&sha);
+
+	// SHA512Input(&sha, Hcurrent[0], SHA512HashSize);
+
+	// SHA512Input(&sha, (const uint8_t*)&timerInt, 4);
+
+	// SHA512Input(&sha, (const uint8_t*)coeffs, aux * sizeof(uint64_t));
+
+	// SHA512Result(&sha, newTrCode);
+
+	// /* Check if computed tracking code matches the received tracking code */
+	// for(int j=0;j<SHA512HashSize;j++){
+	// 	if(trackingCode[j]!=newTrCode[j]){
+	// 		printf("ERROR\n");
+	// 	}
+	// }
 }
 
 
@@ -1000,8 +1212,9 @@ int main(int argc, char *arg[]) {
 	FILE *resultadoCycles;
 	unsigned long long onVoterActiveCycles, onChallengeCycles;
   	uint32_t vote;
-	char infoContest[]="Teste";
+	uint8_t infoContest=0x3f;
 	int numVotos, numTest=1;
+	int chal = 1;
 
   	resultadoCycles = fopen("resultadoCiclosSim","a");
 	if (resultadoCycles==NULL) {
@@ -1009,7 +1222,7 @@ int main(int argc, char *arg[]) {
 		return 0;
 	}
 
-	for (numVotos = 100; numVotos <= 100; numVotos+=100) {
+	for (numVotos = 10; numVotos <= 100; numVotos+=100) {
 		fprintf(resultadoCycles, "Numero Votos = %d, %d testes\n", numVotos, numTest);
 		fprintf(resultadoCycles, "    Setup;  onStart;onVoterActive;  onChallenge;    onFinish\n");
 		fflush(resultadoCycles);
@@ -1036,6 +1249,7 @@ int main(int argc, char *arg[]) {
 			onVoterActiveCycles = 0;
 			onChallengeCycles = 0;
 			for(int j = 0; j < numVotos; j ++) {
+				// printf("VOTO %d\n\n",j);
 				getrandom(&vote, sizeof(vote), 0);
 				vote&=0x8FFFFFFF;
 
@@ -1091,15 +1305,22 @@ int main(int argc, char *arg[]) {
 				onVoterActiveCycles+=bench_total();
 
 				//check tracking code
-
+				createQRTrackingCode();
 
 			// 	//verifyVote (vote, &key, r, &timer, trackingCode);
+		
+				if (voteNumber == 7 && chal == 1){
 
-				bench_reset();
-				bench_before();
-				onChallenge (TRUE);
-				bench_after();
-				onChallengeCycles+=bench_total();
+					onChallenge (FALSE);
+					verifyVote(QRCodeTrackingCode,QRCodeSpoilTrackingCode,QRCodeSpoilNonce,QRCodeSpoilVotes);
+					chal = 0;
+				} else {
+					bench_reset();
+					bench_before();
+					onChallenge (TRUE);
+					bench_after();
+					onChallengeCycles+=bench_total();
+				}
 				
 			}
 

@@ -79,6 +79,13 @@ nmod_poly_t *commit_irred(int i);
  */
 void pcrt_poly_rec(nmod_poly_t c, pcrt_poly_t a);
 
+/* Convert polynomial to CRT representation.
+ *
+ * @param[in] a 		- the resulting polynomial in CRT representation.
+ * @param[in] c 		- the polynomial to convert.
+ */
+void pcrt_poly_convert(pcrt_poly_t a, nmod_poly_t c);
+
 /* Compute the squared l2-norm of a polynomial.
  *
  * @param[in] r			- the polynomial to compute the norm.
