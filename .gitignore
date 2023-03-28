@@ -1,1 +1,13 @@
 *.o
+onVoterActiveCycles
+RDVOutput*
+SigZKP*
+voteOutput*
+ZKPOutput*
+voting_*
+APITest
+APITest copy.c
+resultado*
+votingSimulator
+.vscode
+dilithium/
