@@ -1,5 +1,7 @@
 #include "APISimulator.h"
 
+
+
 typedef struct _VoteTable {
 	commit_t commit;
 	pcrt_poly_t r[WIDTH];
@@ -9,6 +11,10 @@ typedef struct _VoteTable {
 } VoteTable;
 
 static int voteNumber;
+uint8_t pubSignKey[pqcrystals_dilithium2_PUBLICKEYBYTES];
+static uint8_t privSignKey[pqcrystals_dilithium2_SECRETKEYBYTES];
+uint8_t QRCodeSign[pqcrystals_dilithium2_BYTES];
+size_t tamSig;
 static uint8_t H0[CONTESTS][SHA512HashSize];
 static uint8_t Hcurrent[CONTESTS][SHA512HashSize];
 static uint32_t RDV[CONTESTS][VOTERS];
@@ -22,6 +28,7 @@ static uint8_t trackingCode[CONTESTS][SHA512HashSize];
 static uint8_t voteContestCasted;
 static uint8_t numberContests;
 uint8_t QRCodeTrackingCode[CONTESTS*(SHA512HashSize+sizeof(uint32_t))];
+static int tamQRCodeTrackingCode;
 uint8_t QRCodeSpoilTrackingCode[CONTESTS*SHA512HashSize];
 uint8_t QRCodeSpoilNonce[CONTESTS*WIDTH*(DEGREE/4)]; // Degree*2/8
 uint32_t QRCodeSpoilVotes[CONTESTS];
@@ -84,6 +91,288 @@ static void insertionSort(uint32_t arr[], int n)
 		arr[j + 1] = key;
 	}
 }
+static void printCommitKey(commitkey_t *key){
+	for(int w = 0; w < WIDTH; w++){
+		for(int h = 0; h < HEIGHT; h++){
+			for (int k = 0; k < 2; k++){
+				printf("\n\n");
+				nmod_poly_print(key->B1[h][w][k]);
+			}
+		}
+		for (int k = 0; k < 2; k++){
+			printf("\n\n");
+			nmod_poly_print(key->b2[w][k]);
+		}
+	}
+	
+}
+
+
+static void escreverArquivoMp_ptr (SHA512Context *sha, mp_ptr ptr, size_t typ, size_t len, FILE *nomeArquivo) {
+	uint64_t filler = 0x00;
+	int fullLen=DEGREE;
+
+	if(len<=DEGCRT){
+		fullLen = DEGCRT;
+	}
+	for (int i = 0; i < fullLen; i++) {
+		if(i<len){
+			fwrite(ptr+i, typ, 1,nomeArquivo);
+			SHA512Input(sha,(const uint8_t*)ptr+i,typ);
+		} else {
+			fwrite(&filler, typ, 1,nomeArquivo);
+			SHA512Input(sha,(const uint8_t*)&filler, typ);
+		}
+		
+	}
+}
+
+static void lerArquivoVoteOutput (char voteOutputName[20], uint8_t HTail[SHA512HashSize], uint8_t HHead[SHA512HashSize], 
+							uint8_t HTrackCode[VOTERS][SHA512HashSize], time_t vTime[VOTERS], commit_t com[VOTERS], int numVoters) {
+	FILE *voteOutput;
+
+	for (int i = 0; i < numVoters; i++) {
+		for (int j = 0; j < 2; j++) {
+			nmod_poly_init(com[i].c1[j], MODP);
+			nmod_poly_init(com[i].c2[j], MODP);
+			nmod_poly_fit_length(com[i].c1[j], DEGCRT);
+			nmod_poly_fit_length(com[i].c2[j], DEGCRT);
+			nmod_poly_zero(com[i].c1[j]);
+			nmod_poly_zero(com[i].c2[j]);
+		}
+	}
+
+	voteOutput = fopen(voteOutputName,"r");
+	if (voteOutput != NULL) {
+		fread(HTail,sizeof(uint8_t),SHA512HashSize,voteOutput);
+		fread(HHead,sizeof(uint8_t),SHA512HashSize,voteOutput);
+		for (int i = 0; i < numVoters; i++) {
+			fread(HTrackCode[i],sizeof(uint8_t),SHA512HashSize,voteOutput);
+			fread(&vTime[i],sizeof(uint32_t),1,voteOutput);
+			for (int j = 0; j < 2; j++) {
+				com[i].c1[j]->length = DEGCRT;
+				com[i].c2[j]->length = DEGCRT;
+
+				for (int coeff = 0; coeff < DEGCRT; coeff++) {
+					fread(com[i].c1[j]->coeffs+coeff, sizeof(uint32_t), 1, voteOutput);
+					*(com[i].c1[j]->coeffs+coeff)&=0xFFFFFFFF;
+				}
+				
+				for (int coeff = 0; coeff < DEGCRT; coeff++) {
+					fread(com[i].c2[j]->coeffs+coeff, sizeof(uint32_t), 1, voteOutput);
+					*(com[i].c2[j]->coeffs+coeff)&=0xFFFFFFFF;
+				}
+			}
+		}
+		
+	}
+	fclose(voteOutput);
+}
+
+static void lerArquivoRDV (char RDVOutputName[20], nmod_poly_t _m[VOTERS], int numVoters) {
+	FILE *RDVOutput;
+	uint32_t vote;
+
+	for (int i = 0; i < numVoters; i++) {
+		nmod_poly_init(_m[i], MODP);
+		nmod_poly_zero(_m[i]);
+	}
+
+	RDVOutput = fopen(RDVOutputName,"r");
+	if (RDVOutput != NULL) {
+		for (int i = 0; i < numVoters; i++) {
+			if (fscanf(RDVOutput,"%u",&vote) != EOF) {
+				nmod_poly_set_coeff_ui(_m[i],0,vote);
+			}
+		}
+	}
+	fclose(RDVOutput);
+}
+
+static void lerArquivoZKP (char ZKPOutputName[20], nmod_poly_t rho, nmod_poly_t beta,
+					nmod_poly_t s[VOTERS], commit_t d[VOTERS],
+					nmod_poly_t t[VOTERS][2], nmod_poly_t _t[VOTERS][2],
+					nmod_poly_t u[VOTERS][2], nmod_poly_t y[VOTERS][WIDTH][2], 
+					nmod_poly_t _y[VOTERS][WIDTH][2], int numVoters) {
+	FILE *ZKPOutput;
+
+	nmod_poly_init(rho, MODP);
+	nmod_poly_init(beta, MODP);
+
+	nmod_poly_fit_length(rho, DEGREE);
+	nmod_poly_fit_length(beta, DEGREE);
+
+	nmod_poly_zero(rho);
+	nmod_poly_zero(beta);
+	
+
+	for (int i = 0; i < numVoters; i++) {
+		nmod_poly_init(s[i], MODP);
+
+		nmod_poly_fit_length(s[i],DEGREE);
+
+		nmod_poly_zero(s[i]);
+
+		for (int j = 0; j < 2; j++) {
+			nmod_poly_init(d[i].c1[j], MODP);
+			nmod_poly_init(d[i].c2[j], MODP);
+			nmod_poly_init(t[i][j], MODP);
+			nmod_poly_init(_t[i][j], MODP);
+			nmod_poly_init(u[i][j], MODP);
+			for (int w = 0; w < WIDTH; w++) {
+				nmod_poly_init(y[i][w][j], MODP);
+				nmod_poly_init(_y[i][w][j], MODP);
+			}
+
+
+			nmod_poly_fit_length(d[i].c1[j], DEGCRT);
+			nmod_poly_fit_length(d[i].c2[j], DEGCRT);
+			nmod_poly_fit_length(t[i][j], DEGCRT);
+			nmod_poly_fit_length(_t[i][j], DEGCRT);
+			nmod_poly_fit_length(u[i][j], DEGCRT);
+			for (int w = 0; w < WIDTH; w++) {
+				nmod_poly_fit_length(y[i][w][j], DEGCRT);
+				nmod_poly_fit_length(_y[i][w][j], DEGCRT);
+			}
+
+			nmod_poly_zero(d[i].c1[j]);
+			nmod_poly_zero(d[i].c2[j]);
+			nmod_poly_zero(t[i][j]);
+			nmod_poly_zero(_t[i][j]);
+			nmod_poly_zero(u[i][j]);
+			for (int w = 0; w < WIDTH; w++) {
+				nmod_poly_zero(y[i][w][j]);
+				nmod_poly_zero(_y[i][w][j]);
+			}
+
+		}
+	}
+
+	ZKPOutput = fopen(ZKPOutputName,"r");
+	if (ZKPOutput != NULL) {
+		rho->length = DEGREE;
+		beta->length = DEGREE;
+
+		for (int coeff = 0; coeff < DEGREE; coeff++) {
+			fread(rho->coeffs+coeff, sizeof(uint32_t), 1, ZKPOutput);
+			*(rho->coeffs+coeff)&=0xFFFFFFFF;
+		}
+
+		for (int coeff = 0; coeff < DEGREE; coeff++) {
+			fread(beta->coeffs+coeff, sizeof(uint32_t), 1, ZKPOutput);
+			*(beta->coeffs+coeff)&=0xFFFFFFFF;
+		}
+
+		s[0]->length = DEGREE;
+		for (int coeff = 0; coeff < DEGREE; coeff++) {
+			fread(s[0]->coeffs+coeff, sizeof(uint32_t), 1, ZKPOutput);
+			*(s[0]->coeffs+coeff)&=0xFFFFFFFF;
+		}
+
+		for (int i = 1; i < numVoters-1; i++) {
+			s[i]->length = DEGREE;
+
+			for (int coeff = 0; coeff < DEGREE; coeff++) {
+			fread(s[i]->coeffs+coeff, sizeof(uint32_t), 1, ZKPOutput);
+			*(s[i]->coeffs+coeff)&=0xFFFFFFFF;
+			}
+		}
+
+		for (int i = 0; i < numVoters; i++){
+			for (int j = 0; j < 2; j++) {
+				d[i].c1[j]->length = DEGCRT;
+				d[i].c2[j]->length = DEGCRT;
+				t[i][j]->length = DEGCRT;
+				_t[i][j]->length = DEGCRT;
+				u[i][j]->length = DEGCRT;
+
+				for (int coeff = 0; coeff < DEGCRT; coeff++) {
+					fread(d[i].c1[j]->coeffs+coeff, sizeof(uint32_t), 1, ZKPOutput);
+					*(d[i].c1[j]->coeffs+coeff)&=0xFFFFFFFF;
+				}
+
+				for (int coeff = 0; coeff < DEGCRT; coeff++) {
+					fread(d[i].c2[j]->coeffs+coeff, sizeof(uint32_t), 1, ZKPOutput);
+					*(d[i].c2[j]->coeffs+coeff)&=0xFFFFFFFF;
+				}
+
+				for (int coeff = 0; coeff < DEGCRT; coeff++) {
+					fread(t[i][j]->coeffs+coeff, sizeof(uint32_t), 1, ZKPOutput);
+					*(t[i][j]->coeffs+coeff)&=0xFFFFFFFF;
+				}
+
+				for (int coeff = 0; coeff < DEGCRT; coeff++) {
+					fread(_t[i][j]->coeffs+coeff, sizeof(uint32_t), 1, ZKPOutput);
+					*(_t[i][j]->coeffs+coeff)&=0xFFFFFFFF;
+				}
+
+				for (int coeff = 0; coeff < DEGCRT; coeff++) {
+					fread(u[i][j]->coeffs+coeff, sizeof(uint32_t), 1, ZKPOutput);
+					*(u[i][j]->coeffs+coeff)&=0xFFFFFFFF;
+				}
+
+				for (int w = 0; w < WIDTH; w++) {
+					y[i][w][j]->length = DEGCRT;
+					_y[i][w][j]->length = DEGCRT;
+
+					for (int coeff = 0; coeff < DEGCRT; coeff++) {
+						fread(y[i][w][j]->coeffs+coeff, sizeof(uint32_t), 1, ZKPOutput);
+						*(y[i][w][j]->coeffs+coeff)&=0xFFFFFFFF;
+					}
+
+					for (int coeff = 0; coeff < DEGCRT; coeff++) {
+						fread(_y[i][w][j]->coeffs+coeff, sizeof(uint32_t), 1, ZKPOutput);
+						*(_y[i][w][j]->coeffs+coeff)&=0xFFFFFFFF;
+					}
+				}
+			}
+		}
+	}
+	fclose(ZKPOutput);
+
+}
+
+static void HashMp_ptr(SHA512Context *sha, mp_ptr ptr, size_t typ, size_t len) {
+	uint64_t filler = 0x00;
+	int fullLen=DEGREE;
+
+
+	if(len<=DEGCRT){
+		fullLen = DEGCRT;
+	}
+	
+	for (int i = 0; i < fullLen; i++) {
+		if(i<len){
+			
+			SHA512Input(sha,(const uint8_t*)ptr+i,typ);
+		} else {
+			
+			SHA512Input(sha,(const uint8_t*)&filler, typ);
+		}
+		
+	}
+}
+
+static void Hash256Mp_ptr(SHA256Context *sha, mp_ptr ptr, size_t typ, size_t len) {
+	uint64_t filler = 0x00;
+	int fullLen=DEGREE;
+
+
+	if(len<=DEGCRT){
+		fullLen = DEGCRT;
+	}
+	
+	for (int i = 0; i < fullLen; i++) {
+		if(i<len){
+			
+			SHA256Input(sha,(const uint8_t*)ptr+i,typ);
+		} else {
+			
+			SHA256Input(sha,(const uint8_t*)&filler, typ);
+		}
+		
+	}
+}
 
 static void shuffle_hash(nmod_poly_t d[2], commitkey_t *key, commit_t x, commit_t y,
 		nmod_poly_t alpha, nmod_poly_t beta, nmod_poly_t u[2],
@@ -100,24 +389,24 @@ static void shuffle_hash(nmod_poly_t d[2], commitkey_t *key, commit_t x, commit_
 	for (int i = 0; i < HEIGHT; i++) {
 		for (int j = 0; j < WIDTH; j++) {
 			for (int k = 0; k < 2; k++) {
-				SHA256Input(&sha, (const uint8_t*)key->B1[i][j][k]->coeffs, key->B1[i][j][k]->alloc * sizeof(uint64_t));
+				Hash256Mp_ptr(&sha,key->B1[i][j][k]->coeffs,sizeof(uint32_t),key->B1[i][j][k]->length);
 			}
 		}
 	}
 
 	/* Hash alpha, beta from linear relation. */
-	SHA256Input(&sha, (const uint8_t*)alpha->coeffs, alpha->alloc * sizeof(uint64_t));
-	SHA256Input(&sha, (const uint8_t*)beta->coeffs, beta->alloc * sizeof(uint64_t));
+	Hash256Mp_ptr(&sha,alpha->coeffs,sizeof(uint32_t),alpha->length);
+	Hash256Mp_ptr(&sha,beta->coeffs,sizeof(uint32_t),beta->length);
 
 	/* Hash [x], [x'], t, t' in CRT representation. */
 	for (int i = 0; i < 2; i++) {
-		SHA256Input(&sha, (const uint8_t*)x.c1[i]->coeffs, x.c1[i]->alloc * sizeof(uint64_t));
-		SHA256Input(&sha, (const uint8_t*)x.c2[i]->coeffs, x.c2[i]->alloc * sizeof(uint64_t));
-		SHA256Input(&sha, (const uint8_t*)y.c1[i]->coeffs, y.c1[i]->alloc * sizeof(uint64_t));
-		SHA256Input(&sha, (const uint8_t*)y.c2[i]->coeffs, y.c2[i]->alloc * sizeof(uint64_t));
-		SHA256Input(&sha, (const uint8_t*)u[i]->coeffs, u[i]->alloc * sizeof(uint64_t));
-		SHA256Input(&sha, (const uint8_t*)t[i]->coeffs, t[i]->alloc * sizeof(uint64_t));
-		SHA256Input(&sha, (const uint8_t*)_t[i]->coeffs, _t[i]->alloc * sizeof(uint64_t));
+		Hash256Mp_ptr(&sha,x.c1[i]->coeffs,sizeof(uint32_t),x.c1[i]->length);
+		Hash256Mp_ptr(&sha,x.c2[i]->coeffs,sizeof(uint32_t),x.c2[i]->length);
+		Hash256Mp_ptr(&sha,y.c1[i]->coeffs,sizeof(uint32_t),y.c1[i]->length);
+		Hash256Mp_ptr(&sha,y.c2[i]->coeffs,sizeof(uint32_t),y.c2[i]->length);
+		Hash256Mp_ptr(&sha,u[i]->coeffs,sizeof(uint32_t),u[i]->length);
+		Hash256Mp_ptr(&sha,t[i]->coeffs,sizeof(uint32_t),t[i]->length);
+		Hash256Mp_ptr(&sha,_t[i]->coeffs,sizeof(uint32_t),_t[i]->length);
 	}
 
 	SHA256Result(&sha, hash);
@@ -206,7 +495,7 @@ static int verifier_lin(commit_t com, commit_t x,
 		nmod_poly_t y[WIDTH][2], nmod_poly_t _y[WIDTH][2],
 		nmod_poly_t t[2], nmod_poly_t _t[2], nmod_poly_t u[2], commitkey_t *key,
 		nmod_poly_t alpha, nmod_poly_t beta, int l, int MSGS) {
-	nmod_poly_t tmp, _d[2], v[2], _v[2], z[WIDTH], _z[WIDTH];
+	nmod_poly_t tmp, _d[2], v[2], _v[2], z[WIDTH], _z[WIDTH], tSave[2], _tSave[2];
 	int result = 1;
 
 	nmod_poly_init(tmp, MODP);
@@ -218,8 +507,12 @@ static int verifier_lin(commit_t com, commit_t x,
 		nmod_poly_init(_d[i], MODP);
 		nmod_poly_init(v[i], MODP);
 		nmod_poly_init(_v[i], MODP);
+		nmod_poly_init(tSave[i], MODP);
+		nmod_poly_init(_tSave[i], MODP);
 		nmod_poly_zero(v[i]);
 		nmod_poly_zero(_v[i]);
+		nmod_poly_set(tSave[i],t[i]);
+		nmod_poly_set(_tSave[i],_t[i]);
 	}
 
 	/* Sample challenge. */
@@ -310,6 +603,10 @@ static int verifier_lin(commit_t com, commit_t x,
 		nmod_poly_clear(_d[i]);
 		nmod_poly_clear(v[i]);
 		nmod_poly_clear(_v[i]);
+		nmod_poly_set(t[i],tSave[i]);
+		nmod_poly_set(_t[i],_tSave[i]);
+		nmod_poly_clear(tSave[i]);
+		nmod_poly_clear(_tSave[i]);
 	}
 	return result;
 }
@@ -318,6 +615,11 @@ static int run(commit_t com[VOTERS], nmod_poly_t m[VOTERS], nmod_poly_t _m[VOTER
 		nmod_poly_t r[VOTERS][WIDTH][2], commitkey_t *key, flint_rand_t rng, int MSGS, char *outputFileName) {
 	FILE *zkpOutput;
 	int flag, result = 1;
+	SHA512Context sha;
+	uint8_t HashToSign[SHA512HashSize];
+	uint8_t Signature[pqcrystals_dilithium2_BYTES];
+	size_t tamSig=0;
+	char SignatureFileName[20];
 	commit_t d[VOTERS];
 	nmod_poly_t t0, t1, rho, beta, theta[VOTERS], s[VOTERS];
 	nmod_poly_t y[WIDTH][2], _y[WIDTH][2], t[2], _t[2], u[2], _r[VOTERS][WIDTH][2];
@@ -350,6 +652,8 @@ static int run(commit_t com[VOTERS], nmod_poly_t m[VOTERS], nmod_poly_t _m[VOTER
 		}
 	}
 
+	SHA512Reset(&sha);
+
 	zkpOutput = fopen(outputFileName, "w");
 	if (zkpOutput == NULL) {
 		printf("Error\n");
@@ -365,8 +669,8 @@ static int run(commit_t com[VOTERS], nmod_poly_t m[VOTERS], nmod_poly_t _m[VOTER
 			}
 		}
 	} while (flag == 0);
-
-	fwrite(rho->coeffs, sizeof(uint32_t), rho->length,zkpOutput);
+	
+	escreverArquivoMp_ptr(&sha,rho->coeffs, sizeof(uint32_t), rho->length,zkpOutput);
 
 
 
@@ -415,14 +719,15 @@ static int run(commit_t com[VOTERS], nmod_poly_t m[VOTERS], nmod_poly_t _m[VOTER
 
 	commit_sample_rand(beta, rng);
 
-	fwrite(beta->coeffs, sizeof(uint32_t), beta->length,zkpOutput);
+	escreverArquivoMp_ptr(&sha,beta->coeffs, sizeof(uint32_t), beta->length,zkpOutput);
+
 
 	nmod_poly_mulmod(s[0], theta[0], _m[0], *commit_poly());
 	nmod_poly_mulmod(t0, beta, m[0], *commit_poly());
 	nmod_poly_sub(s[0], s[0], t0);
 	nmod_poly_invmod(t0, _m[0], *commit_poly());
 	nmod_poly_mulmod(s[0], s[0], t0, *commit_poly());
-	fwrite(s[0]->coeffs, sizeof(uint32_t), s[0]->length,zkpOutput);
+	escreverArquivoMp_ptr(&sha,s[0]->coeffs, sizeof(uint32_t), s[0]->length,zkpOutput);
 	for (int i = 1; i < MSGS - 1; i++) {
 		nmod_poly_mulmod(s[i], theta[i - 1], m[i], *commit_poly());
 		nmod_poly_mulmod(t0, theta[i], _m[i], *commit_poly());
@@ -431,7 +736,6 @@ static int run(commit_t com[VOTERS], nmod_poly_t m[VOTERS], nmod_poly_t _m[VOTER
 		nmod_poly_sub(s[i], s[i], t0);
 		nmod_poly_invmod(t0, _m[i], *commit_poly());
 		nmod_poly_mulmod(s[i], s[i], t0, *commit_poly());
-		fwrite(s[i]->coeffs, sizeof(uint32_t), s[i]->length,zkpOutput);
 	}
 	if (MSGS > 2) {
 		nmod_poly_mulmod(s[MSGS - 1], theta[MSGS - 2], m[MSGS - 1], *commit_poly());
@@ -443,7 +747,9 @@ static int run(commit_t com[VOTERS], nmod_poly_t m[VOTERS], nmod_poly_t _m[VOTER
 		}
 		nmod_poly_invmod(t0, m[MSGS - 1], *commit_poly());
 		nmod_poly_mulmod(s[MSGS - 1], s[MSGS - 1], t0, *commit_poly());
-		fwrite(s[MSGS - 1]->coeffs, sizeof(uint32_t), s[MSGS - 1]->length,zkpOutput);
+	}
+	for (int i = 1; i < MSGS-1; i++) {
+		escreverArquivoMp_ptr(&sha,s[i]->coeffs, sizeof(uint32_t), s[i]->length,zkpOutput);
 	}
 
 	/* Now run \Prod_LIN instances, one for each commitment. */
@@ -455,32 +761,34 @@ static int run(commit_t com[VOTERS], nmod_poly_t m[VOTERS], nmod_poly_t _m[VOTER
 		}
 
 		if (l == 0) {
-			prover_lin(y, _y, t, _t, u, com[0], d[0], key, beta, t0, r[0], _r[0], l);
+			prover_lin(y, _y, t, _t, u, com[0], d[0], key, beta, t0, r[0], _r[0], l);			
 			result &= verifier_lin(com[0], d[0], y, _y, t, _t, u, key, beta, t0, l, MSGS);
 
 			for (int i = 0; i < 2; i++) {
-				fwrite(d[0].c1[i]->coeffs, sizeof(uint32_t), d[0].c1[i]->length,zkpOutput);
-				fwrite(d[0].c2[i]->coeffs, sizeof(uint32_t), d[0].c2[i]->length,zkpOutput);
-				fwrite(t[i]->coeffs, sizeof(uint32_t), t[i]->length,zkpOutput);
-				fwrite(_t[i]->coeffs, sizeof(uint32_t), _t[i]->length,zkpOutput);
-				fwrite(u[i]->coeffs, sizeof(uint32_t), u[i]->length,zkpOutput);
+				escreverArquivoMp_ptr(&sha,d[0].c1[i]->coeffs, sizeof(uint32_t), d[0].c1[i]->length,zkpOutput);
+				escreverArquivoMp_ptr(&sha,d[0].c2[i]->coeffs, sizeof(uint32_t), d[0].c2[i]->length,zkpOutput);
+				escreverArquivoMp_ptr(&sha,t[i]->coeffs, sizeof(uint32_t), t[i]->length,zkpOutput);
+				escreverArquivoMp_ptr(&sha,_t[i]->coeffs, sizeof(uint32_t), _t[i]->length,zkpOutput);
+				escreverArquivoMp_ptr(&sha,u[i]->coeffs, sizeof(uint32_t), u[i]->length,zkpOutput);
+
 				for (int j = 0; j < WIDTH; j++) {
-					fwrite(y[j][i]->coeffs, sizeof(uint32_t), y[j][i]->length,zkpOutput);
-					fwrite(_y[j][i]->coeffs, sizeof(uint32_t), _y[j][i]->length,zkpOutput);
+					escreverArquivoMp_ptr(&sha,y[j][i]->coeffs, sizeof(uint32_t), y[j][i]->length,zkpOutput);
+					escreverArquivoMp_ptr(&sha,_y[j][i]->coeffs, sizeof(uint32_t), _y[j][i]->length,zkpOutput);
 				}
 			}
 		} else {
 			prover_lin(y, _y, t, _t, u, com[l], d[l], key, s[l - 1], t0, r[l], _r[l], l);
 			result &= verifier_lin(com[l], d[l], y, _y, t, _t, u, key, s[l - 1], t0, l, MSGS);
 			for (int i = 0; i < 2; i++) {
-				fwrite(d[l].c1[i]->coeffs, sizeof(uint32_t), d[l].c1[i]->length,zkpOutput);
-				fwrite(d[l].c2[i]->coeffs, sizeof(uint32_t), d[l].c2[i]->length,zkpOutput);
-				fwrite(t[i]->coeffs, sizeof(uint32_t), t[i]->length,zkpOutput);
-				fwrite(_t[i]->coeffs, sizeof(uint32_t), _t[i]->length,zkpOutput);
-				fwrite(u[i]->coeffs, sizeof(uint32_t), u[i]->length,zkpOutput);
+				escreverArquivoMp_ptr(&sha,d[l].c1[i]->coeffs, sizeof(uint32_t), d[l].c1[i]->length,zkpOutput);
+				escreverArquivoMp_ptr(&sha,d[l].c2[i]->coeffs, sizeof(uint32_t), d[l].c2[i]->length,zkpOutput);
+				escreverArquivoMp_ptr(&sha,t[i]->coeffs, sizeof(uint32_t), t[i]->length,zkpOutput);
+				escreverArquivoMp_ptr(&sha,_t[i]->coeffs, sizeof(uint32_t), _t[i]->length,zkpOutput);
+				escreverArquivoMp_ptr(&sha,u[i]->coeffs, sizeof(uint32_t), u[i]->length,zkpOutput);
+
 				for (int j = 0; j < WIDTH; j++) {
-					fwrite(y[j][i]->coeffs, sizeof(uint32_t), y[j][i]->length,zkpOutput);
-					fwrite(_y[j][i]->coeffs, sizeof(uint32_t), _y[j][i]->length,zkpOutput);
+					escreverArquivoMp_ptr(&sha,y[j][i]->coeffs, sizeof(uint32_t), y[j][i]->length,zkpOutput);
+					escreverArquivoMp_ptr(&sha,_y[j][i]->coeffs, sizeof(uint32_t), _y[j][i]->length,zkpOutput);
 				}
 			}
 		}
@@ -488,6 +796,16 @@ static int run(commit_t com[VOTERS], nmod_poly_t m[VOTERS], nmod_poly_t _m[VOTER
 
 	fclose(zkpOutput);
 
+	snprintf(SignatureFileName,20,"Sig%s", outputFileName);
+	zkpOutput = fopen(SignatureFileName, "w");
+
+	SHA512Result(&sha, HashToSign);
+	
+	pqcrystals_dilithium2aes_ref_signature(Signature, &tamSig,
+                                           HashToSign, SHA512HashSize,
+                                           privSignKey);
+	fwrite(Signature, sizeof(uint8_t), tamSig,zkpOutput);
+	fclose(zkpOutput);
 
 	nmod_poly_clear(t0);
 	nmod_poly_clear(t1);
@@ -543,7 +861,8 @@ void onStart (uint8_t infoContest) {
 	/* Start commitment alg */
 	commit_setup();
 
-	/*TODO: CREATE SIGNATURE KEY PAIR*/
+	/* Create Signature Key pair */
+	pqcrystals_dilithium2aes_ref_keypair(pubSignKey, privSignKey);
 
 	/*Hash overlineQ=Hash(A,Q,PublicSignKey)*/
 	SHA512Reset(&sha);
@@ -733,6 +1052,10 @@ void onChallenge (bool cast) {
 
 
 		/* TODO: Sign tracking code and output*/
+		pqcrystals_dilithium2aes_ref_signature(QRCodeSign, &tamSig,
+                                           QRCodeTrackingCode, tamQRCodeTrackingCode,
+                                           privSignKey);
+		
 
 	} else {
 		/* Benaloh Challenge: output  Hcurrent, r and vote. Discard everything*/
@@ -806,15 +1129,18 @@ void onChallenge (bool cast) {
 }
 
 void onFinish () {
-	FILE *voteOutput;
-	SHA512Context sha;
+	FILE *voteOutput, *RDVOutput;
+	SHA512Context sha, shaRDV;
 	flint_rand_t rand;
 	int res;
 	commit_t com_aux[VOTERS];
 	nmod_poly_t m_aux[VOTERS], _m[VOTERS];
 	pcrt_poly_t r_aux[VOTERS][WIDTH];
 	uint8_t closeSignal[] = "CLOSE\0";
-	char outputFileName[20];
+	uint8_t HashToSign[SHA512HashSize];
+	uint8_t Signature[pqcrystals_dilithium2_BYTES];
+	size_t tamSig=0;
+	char outputFileName[20], RDVFileName[20];
 
 	flint_randinit(rand);
 	for (uint8_t cont = 0; cont < CONTESTS; cont++) {
@@ -866,19 +1192,39 @@ void onFinish () {
 
 			/* Clear auxiliary variables and commit-vote-opening association*/
 			if (res) {
+				SHA512Reset(&sha);
+				SHA512Reset(&shaRDV);
+
 				snprintf(outputFileName,20,"voteOutput_Cont%d", cont);
+				snprintf(RDVFileName,20,"RDVOutput_Cont%d", cont);
+
 				voteOutput = fopen(outputFileName, "w");
+				RDVOutput = fopen(RDVFileName, "w");
+
 				fwrite(H0[cont], sizeof(uint8_t), SHA512HashSize,voteOutput);
+				SHA512Input(&sha, H0[cont], SHA512HashSize);
+
 				fwrite(Hcurrent[cont], sizeof(uint8_t), SHA512HashSize,voteOutput);
+				SHA512Input(&sha, Hcurrent[cont], SHA512HashSize);
+
 				for (int i = 0; i < voteNumber; i++) {
 					nmod_poly_clear(m_aux[i]);
 					nmod_poly_clear(_m[i]);
-					fwrite(&RDV[cont][i], sizeof(uint32_t), 1,voteOutput);
+
+					fprintf(RDVOutput, "%u",RDV[cont][i]);
+					SHA512Input(&shaRDV, (const uint8_t*)&RDV[cont][i], 4);
+					fprintf(RDVOutput, "\n");
+					SHA512Input(&shaRDV, (const uint8_t*)"\n", 2);
+					
 					fwrite(vTable[cont][i].trackingCode, sizeof(uint8_t), SHA512HashSize,voteOutput);
+					SHA512Input(&sha, vTable[cont][i].trackingCode, SHA512HashSize);
 					fwrite(&vTable[cont][i].timer, sizeof(uint32_t), 1,voteOutput);
+					SHA512Input(&sha, (const uint8_t*)&vTable[cont][i].timer, 4);
+
 					for (int j = 0; j < 2; j++) {
-						fwrite(vTable[cont][i].commit.c1[j]->coeffs, sizeof(uint32_t), vTable[cont][i].commit.c1[j]->length,voteOutput);
-						fwrite(vTable[cont][i].commit.c2[j]->coeffs, sizeof(uint32_t), vTable[cont][i].commit.c2[j]->length,voteOutput);
+						escreverArquivoMp_ptr(&sha,vTable[cont][i].commit.c1[j]->coeffs, sizeof(uint32_t), vTable[cont][i].commit.c1[j]->length,voteOutput);
+						escreverArquivoMp_ptr(&sha,vTable[cont][i].commit.c2[j]->coeffs, sizeof(uint32_t), vTable[cont][i].commit.c2[j]->length,voteOutput);
+
 						nmod_poly_clear(com_aux[i].c1[j]);
 						nmod_poly_clear(com_aux[i].c2[j]);
 						for (int w = 0; w < WIDTH; w++){
@@ -887,6 +1233,31 @@ void onFinish () {
 					}
 				}
 				fclose(voteOutput);
+				fclose(RDVOutput);
+
+				/* Sign both files (from each hashed entry included)*/
+
+				snprintf(outputFileName,20,"voteOutputSig_Cont%d", cont);
+				snprintf(RDVFileName,20,"RDVOutputSig_Cont%d", cont);
+
+				voteOutput = fopen(outputFileName, "w");
+				RDVOutput = fopen(RDVFileName, "w");				
+
+				SHA512Result(&sha, HashToSign);
+				pqcrystals_dilithium2aes_ref_signature(Signature, &tamSig,
+                                           HashToSign, SHA512HashSize,
+                                           privSignKey);
+				fwrite(Signature, sizeof(uint8_t), tamSig,voteOutput);
+
+				SHA512Result(&shaRDV, HashToSign);
+				pqcrystals_dilithium2aes_ref_signature(Signature, &tamSig,
+                                           HashToSign, SHA512HashSize,
+                                           privSignKey);
+				fwrite(Signature, sizeof(uint8_t), tamSig,RDVOutput);
+
+				fclose(voteOutput);
+				fclose(RDVOutput);
+
 			} else {
 				printf("ERRO ZKP\n");
 			}
@@ -904,7 +1275,6 @@ void onFinish () {
 	commit_finish();
 	flint_randclear(rand);
 	flint_cleanup();
-
 }
 
 int createQRTrackingCode() {
@@ -923,6 +1293,7 @@ int createQRTrackingCode() {
 				numberActiveContests++;
 			}
 	}
+	tamQRCodeTrackingCode = numberActiveContests*(SHA512HashSize+sizeof(uint32_t));
 	return numberActiveContests*(SHA512HashSize+sizeof(uint32_t));
 }
 
@@ -1054,6 +1425,352 @@ void verifyVote (uint8_t *QRTrack, uint8_t *QRSpoilTrack, uint8_t *QRSpoilNon, u
 		}
 	}
 	
+}
+
+void validateRDV (char RDVOutputName[20], char RDVSigOutputName[20], int numVoters){
+	FILE *SigFile;
+	SHA512Context sha;
+	uint8_t hash[SHA512HashSize];
+	nmod_poly_t _m[VOTERS];
+	uint32_t vote;
+	uint8_t Signature[pqcrystals_dilithium2_BYTES];
+	int Success = -1;
+
+	SHA512Reset(&sha);
+	lerArquivoRDV(RDVOutputName,_m,numVoters);
+	for (int i = 0; i < numVoters; i++) {
+		vote = nmod_poly_get_coeff_ui(_m[i],0);
+		SHA512Input(&sha, (const uint8_t*)&vote, 4);
+		SHA512Input(&sha, (const uint8_t*)"\n", 2);
+	}
+	SHA512Result(&sha, hash);
+
+	SigFile = fopen(RDVSigOutputName, "r");
+	if(SigFile != NULL){
+		fread(Signature, sizeof(uint8_t), pqcrystals_dilithium2_BYTES, SigFile);
+	}
+	fclose(SigFile);
+
+	Success = pqcrystals_dilithium2aes_ref_verify(Signature, pqcrystals_dilithium2_BYTES,
+                                        		 hash, SHA512HashSize,
+                                        		 pubSignKey);
+
+	if (Success == 0){
+		printf("\nASSINATURA DO ARQUIVO RDV VERIFICADA COM SUCESSO!\n");
+	} else {
+		printf("\n\nERRO! -- ASSINATURA DO ARQUIVO RDV NAO VERIFICADA -- ERRO!\n\n");
+	}
+
+	for(int i = 0; i < numVoters; i++) {
+		nmod_poly_clear(_m[i]);
+	}
+}
+
+void validateVoteOutput (char voteOutputName[20], char voteSigOutputName[20], int numVoters){
+	FILE *SigFile;
+	SHA512Context sha;
+	uint8_t hash[SHA512HashSize];
+	uint32_t vote;
+	uint8_t Signature[pqcrystals_dilithium2_BYTES];
+	uint8_t HTail[SHA512HashSize];
+	uint8_t HHead[SHA512HashSize];
+	uint8_t HTrackCode[VOTERS][SHA512HashSize];
+	time_t vTime[VOTERS];
+	commit_t com[VOTERS];
+	int Success = -1;
+	uint64_t *coeffs;
+	int aux, result=1;
+	uint8_t HCurrent[SHA512HashSize];
+	uint8_t HNext[SHA512HashSize];
+	uint8_t closeSignal[] = "CLOSE\0";
+
+	SHA512Reset(&sha);
+
+	lerArquivoVoteOutput(voteOutputName, HTail, HHead, HTrackCode, vTime, com, numVoters);
+
+	SHA512Input(&sha, HTail, SHA512HashSize);
+	SHA512Input(&sha, HHead, SHA512HashSize);
+
+	/* Normalise polys to avoid leading zeros */
+	for (int i = 0; i < numVoters; i++) {
+		for (int j = 0; j < 2; j++) {
+			_nmod_poly_normalise(com[i].c1[j]);
+			_nmod_poly_normalise(com[i].c2[j]);
+		}
+	}	
+
+	for (int i = 0; i < numVoters; i++) {
+		SHA512Input(&sha, HTrackCode[i], SHA512HashSize);
+		SHA512Input(&sha, (const uint8_t*)&vTime[i], 4);
+		for (int j = 0; j < 2; j++) {
+			HashMp_ptr(&sha, com[i].c1[j]->coeffs, sizeof(uint32_t), com[i].c1[j]->length);
+			HashMp_ptr(&sha, com[i].c2[j]->coeffs, sizeof(uint32_t), com[i].c2[j]->length);
+		}
+	}
+	SHA512Result(&sha, hash);
+
+	SigFile = fopen(voteSigOutputName, "r");
+	if(SigFile != NULL){
+		fread(Signature, sizeof(uint8_t), pqcrystals_dilithium2_BYTES, SigFile);
+	}
+	fclose(SigFile);
+
+	Success = pqcrystals_dilithium2aes_ref_verify(Signature, pqcrystals_dilithium2_BYTES,
+                                        		 hash, SHA512HashSize,
+                                        		 pubSignKey);
+
+	if (Success == 0){
+		printf("\nASSINATURA DO ARQUIVO DE COMMITS VERIFICADA COM SUCESSO!\n");
+	} else {
+		printf("\n\nERRO! -- ASSINATURA DO ARQUIVO DE COMMITS NAO VERIFICADA -- ERRO!\n\n");
+	}
+
+	/* Check Commitment Chain*/
+
+	for (int j = 0; j < SHA512HashSize; j++){
+		HCurrent[j]=HTail[j];
+	}
+
+	for(int i = 0; i < numVoters; i++){
+		
+		/* Parse the commitment to coeffs variable */
+		aux = 0;
+		coeffs = (uint64_t*)malloc(sizeof(uint64_t)*(nmod_poly_length(com[i].c1[0])+
+														nmod_poly_length(com[i].c1[1])+
+														nmod_poly_length(com[i].c2[0])+
+															nmod_poly_length(com[i].c2[1])));
+
+		for (int w = 0; w < nmod_poly_length(com[i].c1[0]); w++){
+			coeffs[w] = nmod_poly_get_coeff_ui(com[i].c1[0],w);
+		}
+		aux = nmod_poly_length(com[i].c1[0]);
+
+		for (int w = 0; w < nmod_poly_length(com[i].c1[1]); w++){
+			coeffs[w+aux] = nmod_poly_get_coeff_ui(com[i].c1[1],w);
+		}
+		aux+=nmod_poly_length(com[i].c1[1]);
+
+		for (int w = 0; w < nmod_poly_length(com[i].c2[0]); w++){
+			coeffs[w+aux] = nmod_poly_get_coeff_ui(com[i].c2[0],w);
+		}
+		aux+=nmod_poly_length(com[i].c2[0]);
+
+		for (int w = 0; w < nmod_poly_length(com[i].c2[1]); w++){
+			coeffs[w+aux] = nmod_poly_get_coeff_ui(com[i].c2[1],w);
+		}
+		aux+=nmod_poly_length(com[i].c2[1]);
+
+
+		/* Compute next tracking code */
+		SHA512Reset(&sha);
+
+		SHA512Input(&sha, HCurrent, SHA512HashSize);
+
+		SHA512Input(&sha, (const uint8_t*)&vTime[i], 4);
+
+		SHA512Input(&sha, (const uint8_t*)coeffs, aux * sizeof(uint64_t));
+
+		SHA512Result(&sha, HNext);
+
+		free(coeffs);
+
+		for (int j = 0; j < SHA512HashSize; j++){
+			if(HNext[j]!=HTrackCode[i][j]){
+				result = 0;
+			}
+		}
+
+		for (int j = 0; j < SHA512HashSize; j++){
+			HCurrent[j]=HNext[j];
+		}
+
+	}
+	/* Compute HHead */
+	SHA512Reset(&sha);
+
+	SHA512Input(&sha, HCurrent, SHA512HashSize);
+
+	SHA512Input(&sha, (const uint8_t*)closeSignal, strlen((char *)closeSignal));
+
+	SHA512Result(&sha, HNext);
+
+	for (int j = 0; j < SHA512HashSize; j++){
+		if(HNext[j]!=HHead[j]){
+			result = 0;
+		}
+	}
+
+	if(result == 1) {
+		printf("\nHASH CHAIN DOS COMMITS VERIFICADA COM SUCESSO!\n");
+	} else {
+		printf("\n\nERRO! -- HASH CHAIN DOS COMMITS NAO VERIFICADA -- ERRO!\n\n");
+	}
+
+	for(int i = 0; i < numVoters; i++) {
+		commit_free(&com[i]);
+	}
+
+}
+
+
+void validateZKPOutput (char ZKPOutputName[20], char ZKPSigOutputName[20], 
+						char RDVOutputName[20],	char voteOutputName[20], 
+						int numVoters) {
+	nmod_poly_t rho, beta;
+	nmod_poly_t s[VOTERS];
+	commit_t d[VOTERS];
+	nmod_poly_t t[VOTERS][2], _t[VOTERS][2];
+	nmod_poly_t u[VOTERS][2];
+	nmod_poly_t y[VOTERS][WIDTH][2], _y[VOTERS][WIDTH][2];
+	nmod_poly_t t0;
+	uint8_t HTail[SHA512HashSize];
+	uint8_t HHead[SHA512HashSize];
+	uint8_t HTrackCode[VOTERS][SHA512HashSize];
+	time_t vTime[VOTERS];
+	commit_t com[VOTERS];
+	nmod_poly_t _m[VOTERS];
+	int flag, result = 1;
+	flint_rand_t rand;
+	commitkey_t keyTemp;
+	FILE *SigFile;
+	SHA512Context sha;
+	uint8_t hash[SHA512HashSize];
+	uint8_t Signature[pqcrystals_dilithium2_BYTES];
+	int Success = -1;
+
+	flint_randinit(rand);
+    commit_setup();
+
+	commit_keygen(&keyTemp, rand);
+	
+	nmod_poly_init(t0, MODP);
+
+	lerArquivoRDV(RDVOutputName,_m,numVoters);
+	lerArquivoVoteOutput(voteOutputName, HTail, HHead, HTrackCode, vTime, com, numVoters);
+	lerArquivoZKP (ZKPOutputName, rho, beta,
+				   s, d, t, _t,
+				   u, y, _y, numVoters);
+
+	/* Normalise polys to avoid leading zeros */
+	_nmod_poly_normalise(rho);
+	_nmod_poly_normalise(beta);
+	for (int i = 0; i < numVoters; i++) {
+		_nmod_poly_normalise(s[i]);
+		for (int j = 0; j < 2; j++) {
+			_nmod_poly_normalise(d[i].c1[j]);
+			_nmod_poly_normalise(d[i].c2[j]);
+			_nmod_poly_normalise(com[i].c1[j]);
+			_nmod_poly_normalise(com[i].c2[j]);
+			_nmod_poly_normalise(t[i][j]);
+			_nmod_poly_normalise(_t[i][j]);
+			_nmod_poly_normalise(u[i][j]);
+			for (int w = 0; w < WIDTH; w++){
+				_nmod_poly_normalise(y[i][w][j]);
+				_nmod_poly_normalise(_y[i][w][j]);
+			}
+		}
+	}
+
+	SHA512Reset(&sha);
+
+	HashMp_ptr(&sha,rho->coeffs, sizeof(uint32_t), rho->length);
+	HashMp_ptr(&sha,beta->coeffs, sizeof(uint32_t), beta->length);
+
+	HashMp_ptr(&sha,s[0]->coeffs, sizeof(uint32_t), s[0]->length);
+
+	for (int i = 1; i < numVoters-1; i++) {
+		HashMp_ptr(&sha,s[i]->coeffs, sizeof(uint32_t), s[i]->length);
+	}
+
+
+	for (int l = 0; l < numVoters; l++) {
+		for (int i = 0; i < 2; i++) {
+			HashMp_ptr(&sha,d[l].c1[i]->coeffs, sizeof(uint32_t), d[0].c1[i]->length);
+			HashMp_ptr(&sha,d[l].c2[i]->coeffs, sizeof(uint32_t), d[0].c2[i]->length);
+			HashMp_ptr(&sha,t[l][i]->coeffs, sizeof(uint32_t), t[l][i]->length);
+			HashMp_ptr(&sha,_t[l][i]->coeffs, sizeof(uint32_t), _t[l][i]->length);
+			HashMp_ptr(&sha,u[l][i]->coeffs, sizeof(uint32_t), u[l][i]->length);
+
+			for (int j = 0; j < WIDTH; j++) {
+				HashMp_ptr(&sha,y[l][j][i]->coeffs, sizeof(uint32_t), y[l][j][i]->length);
+				HashMp_ptr(&sha,_y[l][j][i]->coeffs, sizeof(uint32_t), _y[l][j][i]->length);
+			}
+		}
+	}
+
+	SHA512Result(&sha, hash);
+
+	SigFile = fopen(ZKPSigOutputName, "r");
+	if(SigFile != NULL){
+		fread(Signature, sizeof(uint8_t), pqcrystals_dilithium2_BYTES, SigFile);
+	}
+	fclose(SigFile);
+
+	Success = pqcrystals_dilithium2aes_ref_verify(Signature, pqcrystals_dilithium2_BYTES,
+                                        		 hash, SHA512HashSize,
+                                        		 pubSignKey);
+
+	if (Success == 0){
+		printf("\nASSINATURA DO ARQUIVO DE ZKP VERIFICADA COM SUCESSO!\n");
+	} else {
+		printf("\n\nERRO! -- ASSINATURA DO ARQUIVO DE ZKP NAO VERIFICADA -- ERRO!\n\n");
+	}
+	
+	/* Prover shifts the messages by rho */
+	for (int i = 0; i < numVoters; i++) {
+		nmod_poly_sub(_m[i], _m[i], rho);
+	}
+
+	/* Verifier shifts the commitment by rho. */
+	for (int i = 0; i < numVoters; i++) {
+		for (int j = 0; j < 2; j++) {
+			nmod_poly_rem(t0, rho, *commit_irred(j));
+			nmod_poly_sub(com[i].c2[j], com[i].c2[j], t0);
+		}
+	}
+
+	for (int l = 0; l < numVoters; l++) {
+		if (l < numVoters - 1) {
+			nmod_poly_mulmod(t0, s[l], _m[l], *commit_poly());
+		} else {
+			nmod_poly_mulmod(t0, beta, _m[l], *commit_poly());
+		}
+
+		if (l == 0) {
+			result &= verifier_lin(com[0], d[0], y[0], _y[0], t[0], _t[0], u[0], &keyTemp, beta, t0, l, numVoters);
+		} else {
+			result &= verifier_lin(com[l], d[l], y[l], _y[l], t[l], _t[l], u[l], &keyTemp, s[l - 1], t0, l, numVoters);
+		}
+	}
+	if (result == 1) {
+		printf("\nPROVA ZKP DE SHUFFLE VERIFICADA COM SUCESSO!\n");
+	} else {
+		printf("\n\nERRO! -- PROVA ZKP DE SHUFFLE NAO VERIFICADA -- ERRO!\n\n");
+	}
+
+	nmod_poly_clear(t0);
+	nmod_poly_clear(rho);
+	nmod_poly_clear(beta);
+	for(int i = 0; i < numVoters; i++) {
+		commit_free(&com[i]);
+		commit_free(&d[i]);
+		nmod_poly_clear(_m[i]);
+		nmod_poly_clear(s[i]);
+		for (int j = 0; j < 2; j++){
+			nmod_poly_clear(t[i][j]);
+			nmod_poly_clear(_t[i][j]);
+			nmod_poly_clear(u[i][j]);
+			for (int w = 0; w < WIDTH; w++){
+				nmod_poly_clear(y[i][w][j]);
+				nmod_poly_clear(_y[i][w][j]);
+			}
+		}
+	}
+	commit_keyfree(&keyTemp);
+	commit_finish();
+	flint_randclear(rand);
+	flint_cleanup();
+
 }
 
 int numberTotalvoters() {

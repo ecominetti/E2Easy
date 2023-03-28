@@ -3,7 +3,7 @@
 Code accompannying the paper "Lattice-Based Proof of Shuffle and Applications to Electronic Voting" by Diego F. Aranha, Carsten Baum, Kristian Gjøsteen,
 Tjerand Silde, and Thor Tunge accepted at CT-RSA 2021.
 
-Depedencies are the GMP and FLINT 2.7.1 libraries.
+Depedencies are the GMP, FLINT 2.7.1, and Dilithium reference libraries. For Dilithium, some files have to be modified so it can be compiled using g++. These files are provided in the dilithiumModifiedFiles/ folder.
 
 For building the code, run `make` inside the source directory. This sill build the binaries for `commit`, `vericrypt` and `shuffle` to test and benchmark different modules of the code.
 

@@ -4,7 +4,10 @@ INCLUDES = bench.h cpucycles.h
 BENCH = bench.c cpucycles.c
 TEST = test.c
 GAUSSIAN = gaussian.o fastrandombytes.c randombytes.c
-LIBS = -lflint -lgmp
+LIBS = -lflint -lgmp 
+DIL_LIBS = -lpqcrystals_dilithium2_ref -lpqcrystals_dilithium3_ref -lpqcrystals_dilithium5_ref -lpqcrystals_dilithium2aes_ref \
+	-lpqcrystals_dilithium3aes_ref -lpqcrystals_dilithium5aes_ref -lpqcrystals_fips202_ref -lpqcrystals_aes256ctr_ref
+DILITHIUM_PATH = ./dilithium/ref/
 
 all: commit encrypt vericrypt shuffle voting
 vote: voting spoilCheck
@@ -35,11 +38,9 @@ votingSimulator: votingSimulator.c commit.c ${TEST} ${BENCH}
 	${CPP} ${CFLAGS} -c commit.c -o commit.o ${LIBS}
 	${CPP} ${CFLAGS} -DMAIN votingSimulator.c commit.o sha224-256.c sha384-512.c ${GAUSSIAN} ${TEST} ${BENCH} -o votingSimulator ${LIBS}
 
-APISimulator: APITest.c APISimulator.c commit.c
+APISimulator: APITest.c APISimulator.c APISimulator.h commit.c
 	${CPP} ${CFLAGS} -DSIGMA_PARAM=SIGMA_C -c gaussian_ct.cpp -o gaussian.o
-	${CPP} ${CFLAGS} -c commit.c -o commit.o ${LIBS}
-	${CPP} ${CFLAGS} -c APISimulator.c -o APISimulator.o ${LIBS}
-	${CPP} ${CFLAGS} APITest.c APISimulator.o commit.o sha224-256.c sha384-512.c ${GAUSSIAN} -o APITest ${LIBS}
+	${CPP} ${CFLAGS} -L${DILITHIUM_PATH} -I${DILITHIUM_PATH} APITest.c APISimulator.c commit.c sha224-256.c sha384-512.c ${GAUSSIAN} ${DIL_LIBS} ${LIBS} -o APITest 
 
 spoilCheck: spoilCheck.c commit.c ${TEST} ${BENCH}
 	${CPP} ${CFLAGS} -DSIGMA_PARAM=SIGMA_C -c gaussian_ct.cpp -o gaussian.o

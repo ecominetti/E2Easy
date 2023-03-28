@@ -5,6 +5,8 @@
 #define _LARGE_TIME_API
 #include <time.h>
 
+#include "./dilithium/ref/api.h"
+
 #include "param.h"
 #include "commit.h"
 #include "gaussian.h"
@@ -23,12 +25,18 @@
 /* Define TRUE and FALSE as integers */
 #define TRUE 1
 #define FALSE 0
+/* Define Dilithium Parameters */
+#define DILITHIUM_MODE 2
+#define DILITHIUM_USE_AES
 
 /*============================================================================*/
 /* External variables definitions                                             */
 /*============================================================================*/
 
+extern uint8_t pubSignKey[pqcrystals_dilithium2_PUBLICKEYBYTES];
 extern uint8_t QRCodeTrackingCode[CONTESTS*(SHA512HashSize+sizeof(uint32_t))];
+extern uint8_t QRCodeSign[pqcrystals_dilithium2_BYTES];
+extern size_t tamSig;
 extern uint8_t QRCodeSpoilTrackingCode[CONTESTS*SHA512HashSize];
 extern uint8_t QRCodeSpoilNonce[CONTESTS*WIDTH*(DEGREE/4)]; // Degree*2/8
 extern uint32_t QRCodeSpoilVotes[CONTESTS];
@@ -97,9 +105,43 @@ int numberTotalvoters();
 /**
  * Verify function for the Benaloh Challenge.
  * Print the result on screen.
- * @param[in] QRTrack       -Tracking Code provided before the challenge.
- * @param QRSpoilTrack      - 
- * @param QRSpoilNon 
- * @param QRSpoilVot 
+ * @param[in] QRTrack       - Tracking Code provided before the challenge.
+ * @param[in] QRSpoilTrack      - Tracking Code of the previous voter, provided by the challenge.
+ * @param[in] QRSpoilNon 		- Nonce used to create the commitment, provided by the challenge.
+ * @param[in] QRSpoilVot 		- Votes used to create the commitment, provided by the challenge.
  */
 void verifyVote (uint8_t *QRTrack, uint8_t *QRSpoilTrack, uint8_t *QRSpoilNon, uint32_t *QRSpoilVot);
+
+
+/**
+ * Validate the signature of the RDV file.
+ * Print the result on screen.
+ * @param[in] RDVOutputName 		- Name of the RDV file.
+ * @param[in] RDVSigOutputName 		- Name of the file that contains the signature for the RDV file.
+ * @param[in] numVoters 			- Number of voters.
+ */
+void validateRDV (char RDVOutputName[20], char RDVSigOutputName[20], int numVoters);
+
+
+/**
+ * Validate the signature of the voteOutput file and the Tracking Code chain.
+ * Print the result on the screeen.
+ * @param[in] voteOutputName 		- Name of the voteOutput file.
+ * @param[in] voteSigOutputName 	- Name of the file that contains the signature for the voteOutput file.
+ * @param[in] numVoters 			- Number of voters.
+ */
+void validateVoteOutput (char voteOutputName[20], char voteSigOutputName[20], int numVoters);
+
+
+/**
+ * Validate the signature of the ZKP file and the ZKPs.
+ * Print the result on the screen.
+ * @param[in] ZKPOutputName 		- Name of the ZKP file.
+ * @param[in] ZKPSigOutputName 		- Name of the file that contains the signature for the ZKP file.
+ * @param[in] RDVOutputName 		- Name of the RDV file.
+ * @param[in] voteOutputName 		- Name of the voteOutput file.
+ * @param numVoters 				- Number of voters.
+ */
+void validateZKPOutput (char ZKPOutputName[20], char ZKPSigOutputName[20], 
+						char RDVOutputName[20], char voteOutputName[20],
+						int numVoters);
