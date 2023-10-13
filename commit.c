@@ -22,8 +22,6 @@
 /* The second square root of -1. */
 #define P1		752843710
 
-#define LIM		50
-
 /* Polynomial defining the cyclotomic ring. */
 static nmod_poly_t cyclo_poly;
 
@@ -48,7 +46,7 @@ static int test_norm(nmod_poly_t r) {
 	sigma_sqr *= sigma_sqr * DEGREE * WIDTH;
 
 	// Compare to (4 * sigma * sqrt(N))^2 = 16 * sigma^2 * N.
-	return norm <= (uint64_t)16 * sigma_sqr * DEGREE;
+	return norm <= (uint64_t) 16 *sigma_sqr * DEGREE;
 }
 
 /*============================================================================*/
@@ -114,36 +112,20 @@ void pcrt_poly_convert(pcrt_poly_t a, nmod_poly_t c) {
 
 // Compute squared l2-norm.
 uint64_t commit_norm2_sqr(nmod_poly_t r) {
-	int64_t norm = 0;
-	uint32_t coeff;
+	int64_t coeff, norm = 0;
 
 	/* Compute norm^2. */
 	for (int i = 0; i < DEGREE; i++) {
 		coeff = nmod_poly_get_coeff_ui(r, i);
-		if (coeff > MODP / 2) coeff -= MODP;
+		if (coeff > MODP / 2)
+			coeff -= MODP;
 		norm += coeff * coeff;
-	}
-	return norm;
-}
-
-// Compute squared l\infty-norm.
-uint64_t commit_norm_inf(nmod_poly_t r) {
-	int64_t norm = 0;
-	uint32_t coeff;
-
-	/* Compute norm_\infty = max absolute coefficient. */
-	for (int i = 0; i < DEGREE; i++) {
-		coeff = nmod_poly_get_coeff_ui(r, i);
-		if (coeff > MODP / 2) coeff = MODP - coeff;
-		if (coeff > norm) norm = coeff;
 	}
 	return norm;
 }
 
 // Generate a key pair.
 void commit_keygen(commitkey_t *key, flint_rand_t rand) {
-	int flag;
-
 	for (int i = 0; i < HEIGHT; i++) {
 		for (int j = 0; j < WIDTH; j++) {
 			for (int k = 0; k < 2; k++) {
@@ -159,15 +141,7 @@ void commit_keygen(commitkey_t *key, flint_rand_t rand) {
 	for (int i = 0; i < HEIGHT; i++) {
 		for (int j = HEIGHT; j < WIDTH; j++) {
 			for (int k = 0; k < 2; k++) {
-				do {
-					flag=0;
-					nmod_poly_randtest(key->B1[i][j][k], rand, DEGCRT);
-					for (int l = 0; l < DEGCRT && flag<LIM; l++) {
-						if (nmod_poly_get_coeff_ui(key->B1[i][j][k],l)==0) {
-							flag++;
-						}
-					}
-				} while (flag==LIM);
+				commit_sample_rand(key->B1[i][j][k], rand, DEGCRT);
 			}
 		}
 	}
@@ -179,15 +153,7 @@ void commit_keygen(commitkey_t *key, flint_rand_t rand) {
 				nmod_poly_set_coeff_ui(key->b2[i][j], 0, 1);
 			}
 			if (i > HEIGHT) {
-				do {
-					flag=0;
-					nmod_poly_randtest(key->b2[i][j], rand, DEGCRT);
-					for (int l = 0; l < DEGCRT && flag<LIM; l++) {
-						if (nmod_poly_get_coeff_ui(key->b2[i][j],l)==0) {
-							flag++;
-						}
-					}
-				} while (flag==LIM);
+				commit_sample_rand(key->b2[i][j], rand, DEGCRT);
 			}
 		}
 	}
@@ -209,71 +175,34 @@ void commit_keyfree(commitkey_t *key) {
 	}
 }
 
-// // Sample a short polynomial.
-// void commit_sample_short(nmod_poly_t r) {
-// 	uint64_t buf;
-// 	uint32_t coeff;
-//
-// 	nmod_poly_zero(r);
-// 	nmod_poly_fit_length(r, DEGREE);
-// 	for (int i = 0; i < DEGREE; i += 32) {
-// 		getrandom(&buf, sizeof(buf), 0);
-// 		for (int j = 0; j < 64; j += 2) {
-// 			if ((buf >> j) & 1) {
-// 				coeff = MODP - ((buf >> (j + 1)) & 1);
-// 			} else {
-// 				coeff = (buf >> (j + 1)) & 1;
-// 			}
-// 			nmod_poly_set_coeff_ui(r, (i+j/2) % DEGREE, coeff);
-// 		}
-// 	}
-// }
-
-// // Sample a short polynomial.
-// void commit_sample_short(nmod_poly_t r) {
-// 	uint64_t buf;
-// 	uint32_t coeff;
-//
-// 	nmod_poly_zero(r);
-// 	nmod_poly_fit_length(r, DEGREE);
-// 	for (int i = 0; i < DEGREE; i++) {
-// 		getrandom(&buf, sizeof(buf), 0);
-// 		buf=buf%3;
-// 		coeff = MODP - 1 + buf;
-// 		nmod_poly_set_coeff_ui(r, i, coeff);
-// 	}
-// }
-
 // Sample a short polynomial.
 void commit_sample_short(nmod_poly_t r) {
 	uint64_t buf;
 	uint32_t coeff;
-	int i,j,s;
+	int i, j, s;
 
 	nmod_poly_zero(r);
 	nmod_poly_fit_length(r, DEGREE);
 	i = 0;
-	s = 8*sizeof(buf);
+	s = 8 * sizeof(buf);
 	j = s;
 
 	do {
-		if(j == s) {
+		if (j == s) {
 			getrandom(&buf, sizeof(buf), 0);
 			j = 0;
 		}
 
-		if (((buf >> j) & 1) & ((buf >> (j+1)) & 1)){
+		if (((buf >> j) & 1) & ((buf >> (j + 1)) & 1)) {
 			j += 2;
-		}
-		else {
+		} else {
 			coeff = MODP - 1 + ((buf >> j) & 3);
 			nmod_poly_set_coeff_ui(r, i, coeff);
 			i++;
 			j += 2;
 		}
-	} while(i < DEGREE);
+	} while (i < DEGREE);
 }
-
 
 // Sample a short polynomial in CRT representation.
 void commit_sample_short_crt(pcrt_poly_t r) {
@@ -288,18 +217,13 @@ void commit_sample_short_crt(pcrt_poly_t r) {
 }
 
 // Sample a random polynomial.
-void commit_sample_rand(nmod_poly_t r, flint_rand_t rand) {
-	int flag;
-
-	do {
-		flag=0;
-		nmod_poly_randtest(r, rand, DEGREE);
-		for (int j = 0; j < DEGREE && flag<LIM; j++) {
-			if (nmod_poly_get_coeff_ui(r,j)==0) {
-				flag++;
-			}
-		}
-	} while (flag==LIM);
+void commit_sample_rand(nmod_poly_t r, flint_rand_t rand, int degree) {
+	nmod_poly_fit_length(r, degree);
+	for (int i = 0; i < degree; i++) {
+		r->coeffs[i] = n_randtest(rand) % MODP;
+	}
+	r->length = degree;
+	_nmod_poly_normalise(r);
 }
 
 // Sample a random polynomial in CRT representation.
@@ -307,7 +231,7 @@ void commit_sample_rand_crt(pcrt_poly_t r, flint_rand_t rand) {
 	nmod_poly_t t;
 
 	nmod_poly_init(t, MODP);
-	commit_sample_rand(t, rand);
+	commit_sample_rand(t, rand, DEGREE);
 	for (int i = 0; i < 2; i++) {
 		nmod_poly_rem(r[i], t, irred[i]);
 	}
@@ -352,10 +276,11 @@ void commit_sample_chall_crt(pcrt_poly_t f) {
 
 // Sample a polynomial according to a Gaussian distribution.
 void commit_sample_gauss(nmod_poly_t r) {
-	int32_t coeff;
-	for (int i = 0; i < DEGREE; i ++) {
+	int64_t coeff;
+	for (int i = 0; i < DEGREE; i++) {
 		coeff = discrete_gaussian(0.0);
-		if (coeff < 0) coeff += MODP;
+		if (coeff < 0)
+			coeff += MODP;
 		nmod_poly_set_coeff_ui(r, i, coeff);
 	}
 }
@@ -373,7 +298,8 @@ void commit_sample_gauss_crt(nmod_poly_t r[2]) {
 }
 
 // Commit to a message.
-void commit_doit(commit_t *com, nmod_poly_t m, commitkey_t *key, pcrt_poly_t r[WIDTH]) {
+void commit_doit(commit_t *com, nmod_poly_t m, commitkey_t *key,
+		pcrt_poly_t r[WIDTH]) {
 	nmod_poly_t t;
 
 	nmod_poly_init(t, MODP);
@@ -408,7 +334,8 @@ void commit_doit(commit_t *com, nmod_poly_t m, commitkey_t *key, pcrt_poly_t r[W
 }
 
 // Open a commitment on a message, randomness, factor.
-int commit_open(commit_t *com, nmod_poly_t m, commitkey_t *key,  pcrt_poly_t r[WIDTH], pcrt_poly_t f) {
+int commit_open(commit_t *com, nmod_poly_t m, commitkey_t *key,
+		pcrt_poly_t r[WIDTH], pcrt_poly_t f) {
 	nmod_poly_t t;
 	pcrt_poly_t c1, c2, _c1, _c2;
 	int result = 0;
@@ -429,8 +356,10 @@ int commit_open(commit_t *com, nmod_poly_t m, commitkey_t *key,  pcrt_poly_t r[W
 			for (int k = 0; k < 2; k++) {
 				nmod_poly_mulmod(t, key->B1[i][j][k], r[j][k], irred[k]);
 				nmod_poly_add(c1[k], c1[k], t);
-				nmod_poly_mulmod(t, key->b2[j][k], r[j][k], irred[k]);
-				nmod_poly_add(c2[k], c2[k], t);
+				if (i == 0) {
+					nmod_poly_mulmod(t, key->b2[j][k], r[j][k], irred[k]);
+					nmod_poly_add(c2[k], c2[k], t);
+				}
 			}
 		}
 	}
@@ -453,8 +382,10 @@ int commit_open(commit_t *com, nmod_poly_t m, commitkey_t *key,  pcrt_poly_t r[W
 		if (test_norm(t)) {
 			pcrt_poly_rec(t, r[2]);
 			if (test_norm(t)) {
-				if (nmod_poly_equal(_c1[0], c1[0]) && nmod_poly_equal(_c2[0], c2[0])) {
-					if (nmod_poly_equal(_c1[1], c1[1]) && nmod_poly_equal(_c2[1], c2[1])) {
+				if (nmod_poly_equal(_c1[0], c1[0]) &&
+						nmod_poly_equal(_c2[0], c2[0])) {
+					if (nmod_poly_equal(_c1[1], c1[1]) &&
+							nmod_poly_equal(_c2[1], c2[1])) {
 						result = 1;
 					}
 				}
@@ -538,7 +469,7 @@ static void test(flint_rand_t rand) {
 		TEST_ASSERT(commit_open(&com, m, &key, s, f) == 1, end);
 	} TEST_END;
 
-end:
+  end:
 	commit_keyfree(&key);
 	commit_free(&com);
 	nmod_poly_clear(m);
@@ -614,8 +545,8 @@ static void microbench(flint_rand_t rand) {
 		nmod_poly_init(u[i], MODP);
 	}
 
-	commit_sample_rand(beta, rand);
-	commit_sample_rand(alpha, rand);
+	commit_sample_rand(beta, rand, DEGREE);
+	commit_sample_rand(alpha, rand, DEGREE);
 
 	BENCH_BEGIN("Polynomial addition") {
 		BENCH_ADD(nmod_poly_add(alpha, alpha, beta));
@@ -630,22 +561,25 @@ static void microbench(flint_rand_t rand) {
 
 	BENCH_BEGIN("Polynomial mult in CRT form") {
 		BENCH_ADD(nmod_poly_mulmod(t[0], t[0], u[0], irred[0]));
-	}}
-	bench_compute(BENCH * (BENCH >> 1));
-	bench_print();
+		BENCH_ADD(nmod_poly_mulmod(t[1], t[1], u[1], irred[1]));
+	} BENCH_ENDM
 
-	nmod_poly_clear(alpha);
-	nmod_poly_clear(beta);
-	for (int i = 0; i < 2; i++) {
-		nmod_poly_clear(t[i]);
-		nmod_poly_clear(u[i]);
-	}
+nmod_poly_clear(alpha);
+nmod_poly_clear(beta);
+for (int i = 0; i < 2; i++) {
+	nmod_poly_clear(t[i]);
+	nmod_poly_clear(u[i]);
+}
 }
 
 int main(int argc, char *arv[]) {
 	flint_rand_t rand;
+	uint64_t buf[2];
 
+	getrandom(buf, sizeof(buf), GRND_RANDOM);
 	flint_randinit(rand);
+	flint_randseed(rand, buf[0], buf[1]);
+
 	commit_setup();
 
 	printf("\n** Tests for lattice-based commitments:\n\n");
@@ -658,5 +592,6 @@ int main(int argc, char *arv[]) {
 	bench(rand);
 
 	commit_finish();
+	flint_randclear(rand);
 }
 #endif

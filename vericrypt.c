@@ -48,31 +48,38 @@ static int vericrypt_test_norm(veritext_t *out) {
 			qcrt_poly_rec(t, out->r[i][j]);
 			for (int k = 0; k < DEGREE; k++) {
 				fmpz_mod_poly_get_coeff_fmpz(coeff, t, k, *ctx);
-				if (fmpz_cmp(coeff, qdiv2) > 0) fmpz_sub(coeff, coeff, *q);
+				if (fmpz_cmp(coeff, qdiv2) > 0)
+					fmpz_sub(coeff, coeff, *q);
 				fmpz_abs(coeff, coeff);
-				if (fmpz_cmp(coeff, max) > 0) fmpz_set(max, coeff);
+				if (fmpz_cmp(coeff, max) > 0)
+					fmpz_set(max, coeff);
 			}
 			qcrt_poly_rec(t, out->e[i][j]);
 			for (int k = 0; k < DEGREE; k++) {
 				fmpz_mod_poly_get_coeff_fmpz(coeff, t, k, *ctx);
-				if (fmpz_cmp(coeff, qdiv2) > 0) fmpz_sub(coeff, coeff, *q);
+				if (fmpz_cmp(coeff, qdiv2) > 0)
+					fmpz_sub(coeff, coeff, *q);
 				fmpz_abs(coeff, coeff);
-				if (fmpz_cmp(coeff, max) > 0) fmpz_set(max, coeff);
+				if (fmpz_cmp(coeff, max) > 0)
+					fmpz_set(max, coeff);
 			}
 		}
 		qcrt_poly_rec(t, out->e_[i]);
 		for (int k = 0; k < DEGREE; k++) {
 			fmpz_mod_poly_get_coeff_fmpz(coeff, t, k, *ctx);
-			if (fmpz_cmp(coeff, qdiv2) > 0) fmpz_sub(coeff, coeff, *q);
+			if (fmpz_cmp(coeff, qdiv2) > 0)
+				fmpz_sub(coeff, coeff, *q);
 			fmpz_abs(coeff, coeff);
-			if (fmpz_cmp(coeff, max) > 0) fmpz_set(coeff, max);
+			if (fmpz_cmp(coeff, max) > 0)
+				fmpz_set(coeff, max);
 		}
 	}
 	for (int i = 0; i < VECTOR; i++) {
 		for (int k = 0; k < DEGREE; k++) {
 			fmpz_mod_poly_get_coeff_fmpz(coeff, out->u[i], k, *ctx);
 			fmpz_abs(coeff, coeff);
-			if (fmpz_cmp(coeff, max) > 0) fmpz_set(coeff, max);
+			if (fmpz_cmp(coeff, max) > 0)
+				fmpz_set(coeff, max);
 		}
 	}
 
@@ -83,7 +90,7 @@ static int vericrypt_test_norm(veritext_t *out) {
 	fmpz_clear(coeff);
 	fmpz_clear(max);
 	fmpz_clear(qdiv2);
-	return (result <= 0);
+	return (result < 0);
 }
 
 /*============================================================================*/
@@ -96,8 +103,10 @@ void vericrypt_free(veritext_t *out) {
 		for (int j = 0; j < DIM; j++) {
 			fmpz_mod_poly_clear(out->e_[i][j], *encrypt_large_modulus_ctx());
 			for (int k = 0; k < 2; k++) {
-				fmpz_mod_poly_clear(out->r[i][j][k], *encrypt_large_modulus_ctx());
-				fmpz_mod_poly_clear(out->e[i][j][k], *encrypt_large_modulus_ctx());
+				fmpz_mod_poly_clear(out->r[i][j][k],
+						*encrypt_large_modulus_ctx());
+				fmpz_mod_poly_clear(out->e[i][j][k],
+						*encrypt_large_modulus_ctx());
 			}
 		}
 	}
@@ -113,19 +122,19 @@ void vericrypt_hash(uint8_t hash[SHA256HashSize], publickey_t *pk,
 
 	fmpz_poly_init(s);
 	SHA256Reset(&sha);
-	
+
 	/* Hash public key (A,t). */
 	for (int i = 0; i < DIM; i++) {
 		for (int j = 0; j < DIM; j++) {
 			for (int k = 0; k < 2; k++) {
 				fmpz_mod_poly_get_fmpz_poly(s, pk->A[i][j][k], *ctx);
 				str = fmpz_poly_get_str(s);
-				SHA256Input(&sha, (const uint8_t*)str, strlen(str));
+				SHA256Input(&sha, (const uint8_t *)str, strlen(str));
 				free(str);
 			}
 			fmpz_mod_poly_get_fmpz_poly(s, pk->t[i][j], *ctx);
 			str = fmpz_poly_get_str(s);
-			SHA256Input(&sha, (const uint8_t*)str, strlen(str));
+			SHA256Input(&sha, (const uint8_t *)str, strlen(str));
 			free(str);
 		}
 	}
@@ -133,12 +142,12 @@ void vericrypt_hash(uint8_t hash[SHA256HashSize], publickey_t *pk,
 	for (int i = 0; i < VECTOR; i++) {
 		fmpz_mod_poly_get_fmpz_poly(s, t[i], *ctx);
 		str = fmpz_poly_get_str(s);
-		SHA256Input(&sha, (const uint8_t*)str, strlen(str));
+		SHA256Input(&sha, (const uint8_t *)str, strlen(str));
 		free(str);
 	}
 	fmpz_mod_poly_get_fmpz_poly(s, u, *ctx);
 	str = fmpz_poly_get_str(s);
-	SHA256Input(&sha, (const uint8_t*)str, strlen(str));
+	SHA256Input(&sha, (const uint8_t *)str, strlen(str));
 	free(str);
 
 	/* Hash ciphertexts c = (v, w), y. */
@@ -147,35 +156,36 @@ void vericrypt_hash(uint8_t hash[SHA256HashSize], publickey_t *pk,
 			for (int k = 0; k < 2; k++) {
 				fmpz_mod_poly_get_fmpz_poly(s, out->cipher[i].v[j][k], *ctx);
 				str = fmpz_poly_get_str(s);
-				SHA256Input(&sha, (const uint8_t*)str, strlen(str));
+				SHA256Input(&sha, (const uint8_t *)str, strlen(str));
 				free(str);
 				fmpz_mod_poly_get_fmpz_poly(s, y[i].v[j][k], *ctx);
 				str = fmpz_poly_get_str(s);
-				SHA256Input(&sha, (const uint8_t*)str, strlen(str));
+				SHA256Input(&sha, (const uint8_t *)str, strlen(str));
 				free(str);
 			}
 		}
 		for (int k = 0; k < 2; k++) {
 			fmpz_mod_poly_get_fmpz_poly(s, out->cipher[i].w[k], *ctx);
 			str = fmpz_poly_get_str(s);
-			SHA256Input(&sha, (const uint8_t*)str, strlen(str));
+			SHA256Input(&sha, (const uint8_t *)str, strlen(str));
 			free(str);
 			fmpz_mod_poly_get_fmpz_poly(s, y[i].w[k], *ctx);
 			str = fmpz_poly_get_str(s);
-			SHA256Input(&sha, (const uint8_t*)str, strlen(str));
+			SHA256Input(&sha, (const uint8_t *)str, strlen(str));
 			free(str);
 		}
 	}
 	fmpz_mod_poly_get_fmpz_poly(s, _u, *encrypt_modulus_ctx());
 	str = fmpz_poly_get_str(s);
-	SHA256Input(&sha, (const uint8_t*)str, strlen(str));
+	SHA256Input(&sha, (const uint8_t *)str, strlen(str));
 	free(str);
 
 	SHA256Result(&sha, hash);
 	fmpz_poly_clear(s);
 }
 
-void vericrypt_sample_chall(fmpz_mod_poly_t f, uint8_t *seed, int len, fmpz_mod_ctx_t *ctx) {
+void vericrypt_sample_chall(fmpz_mod_poly_t f, uint8_t *seed, int len,
+		fmpz_mod_ctx_t *ctx) {
 	fmpz_t coeff;
 	uint32_t buf;
 
@@ -203,7 +213,7 @@ void vericrypt_sample_gauss(fmpz_mod_poly_t r, fmpz_mod_ctx_t *ctx) {
 	fmpz_init(t);
 	fmpz_mod_poly_zero(r, *ctx);
 	fmpz_mod_poly_fit_length(r, DEGREE, *ctx);
-	for (int i = 0; i < DEGREE; i ++) {
+	for (int i = 0; i < DEGREE; i++) {
 		int64_t sample = discrete_gaussian(0.0);
 		fmpz_set_si(t, sample);
 		fmpz_mod_poly_set_coeff_fmpz(r, i, t, *ctx);
@@ -264,7 +274,8 @@ int vericrypt_doit(veritext_t *out, fmpz_mod_poly_t t[VECTOR],
 	}
 
 	for (int i = 0; i < VECTOR; i++) {
-		encrypt_make(&out->cipher[i], out->r[i], out->e[i], out->e_[i], m[i], pk);
+		encrypt_make(&out->cipher[i], out->r[i], out->e[i], out->e_[i], m[i],
+				pk);
 	}
 
 	while (result == 0) {
@@ -297,19 +308,26 @@ int vericrypt_doit(veritext_t *out, fmpz_mod_poly_t t[VECTOR],
 		for (int i = 0; i < VECTOR; i++) {
 			for (int j = 0; j < DIM; j++) {
 				for (int k = 0; k < 2; k++) {
-					fmpz_mod_poly_mulmod(out->r[i][j][k], out->r[i][j][k], c[k], *encrypt_irred(k), *ctx_q);
-					fmpz_mod_poly_add(out->r[i][j][k], out->r[i][j][k], y_r[i][j][k], *ctx_q);
-					fmpz_mod_poly_mulmod(out->e[i][j][k], out->e[i][j][k], c[k], *encrypt_irred(k), *ctx_q);
-					fmpz_mod_poly_add(out->e[i][j][k], out->e[i][j][k], y_e[i][j][k], *ctx_q);
+					fmpz_mod_poly_mulmod(out->r[i][j][k], out->r[i][j][k], c[k],
+							*encrypt_irred(k), *ctx_q);
+					fmpz_mod_poly_add(out->r[i][j][k], out->r[i][j][k],
+							y_r[i][j][k], *ctx_q);
+					fmpz_mod_poly_mulmod(out->e[i][j][k], out->e[i][j][k], c[k],
+							*encrypt_irred(k), *ctx_q);
+					fmpz_mod_poly_add(out->e[i][j][k], out->e[i][j][k],
+							y_e[i][j][k], *ctx_q);
 				}
 			}
 		}
 		for (int i = 0; i < VECTOR; i++) {
 			for (int k = 0; k < 2; k++) {
-				fmpz_mod_poly_mulmod(out->e_[i][k], out->e_[i][k], c[k], *encrypt_irred(k), *ctx_q);
-				fmpz_mod_poly_add(out->e_[i][k], out->e_[i][k], y_e_[i][k], *ctx_q);
+				fmpz_mod_poly_mulmod(out->e_[i][k], out->e_[i][k], c[k],
+						*encrypt_irred(k), *ctx_q);
+				fmpz_mod_poly_add(out->e_[i][k], out->e_[i][k], y_e_[i][k],
+						*ctx_q);
 			}
-			fmpz_mod_poly_mulmod(out->u[i], m[i], out->c, *encrypt_poly(), *ctx_p);
+			fmpz_mod_poly_mulmod(out->u[i], m[i], out->c, *encrypt_poly(),
+					*ctx_p);
 			fmpz_mod_poly_add(out->u[i], out->u[i], y_mu[i], *ctx_p);
 		}
 
@@ -332,7 +350,8 @@ int vericrypt_doit(veritext_t *out, fmpz_mod_poly_t t[VECTOR],
 	return result;
 }
 
-int vericrypt_verify(veritext_t *in, fmpz_mod_poly_t t[VECTOR],	fmpz_mod_poly_t u, publickey_t *pk) {
+int vericrypt_verify(veritext_t *in, fmpz_mod_poly_t t[VECTOR],
+		fmpz_mod_poly_t u, publickey_t *pk) {
 	fmpz_mod_poly_t _u, tp, tq, c;
 	qcrt_poly_t _c;
 	ciphertext_t y[VECTOR];
@@ -368,12 +387,14 @@ int vericrypt_verify(veritext_t *in, fmpz_mod_poly_t t[VECTOR],	fmpz_mod_poly_t 
 		for (int i = 0; i < VECTOR; i++) {
 			for (int j = 0; j < DIM; j++) {
 				for (int k = 0; k < 2; k++) {
-					fmpz_mod_poly_mulmod(tq, _c[k], in->cipher[i].v[j][k], *encrypt_irred(k), *ctx_q);
+					fmpz_mod_poly_mulmod(tq, _c[k], in->cipher[i].v[j][k],
+							*encrypt_irred(k), *ctx_q);
 					fmpz_mod_poly_sub(y[i].v[j][k], y[i].v[j][k], tq, *ctx_q);
 				}
 			}
 			for (int k = 0; k < 2; k++) {
-				fmpz_mod_poly_mulmod(tq, _c[k], in->cipher[i].w[k], *encrypt_irred(k), *ctx_q);
+				fmpz_mod_poly_mulmod(tq, _c[k], in->cipher[i].w[k],
+						*encrypt_irred(k), *ctx_q);
 				fmpz_mod_poly_sub(y[i].w[k], y[i].w[k], tq, *ctx_q);
 			}
 		}
@@ -393,23 +414,23 @@ int vericrypt_verify(veritext_t *in, fmpz_mod_poly_t t[VECTOR],	fmpz_mod_poly_t 
 	return (result == 1);
 }
 
-int vericrypt_undo(fmpz_mod_poly_t m[VECTOR], veritext_t *in, fmpz_mod_poly_t t[VECTOR], fmpz_mod_poly_t u, publickey_t *pk, privatekey_t *sk) {
-	fmpz_mod_poly_t _c;
+int vericrypt_undo(fmpz_mod_poly_t m[VECTOR], fmpz_mod_poly_t c,
+		veritext_t *in, fmpz_mod_poly_t t[VECTOR], fmpz_mod_poly_t u,
+		publickey_t *pk, privatekey_t *sk) {
+	int result = 1;
 
 	if (vericrypt_verify(in, t, u, pk) == 0) {
 		return 0;
 	}
 
-	fmpz_mod_poly_init(_c, *encrypt_modulus_ctx());
-	encrypt_sample_short(_c, *encrypt_modulus_ctx());
-	fmpz_mod_poly_sub(_c, in->c, _c, *encrypt_modulus_ctx());
+	encrypt_sample_short(c, *encrypt_modulus_ctx());
+	fmpz_mod_poly_sub(c, in->c, c, *encrypt_modulus_ctx());
 
 	for (int i = 0; i < VECTOR; i++) {
-		encrypt_undo(m[i], _c, &in->cipher[i], sk);
+		result &= encrypt_undo(m[i], c, &in->cipher[i], sk);
 	}
 
-	fmpz_mod_poly_clear(_c, *encrypt_modulus_ctx());
-	return 1;
+	return result;
 }
 
 #ifdef MAIN
@@ -417,8 +438,8 @@ int vericrypt_undo(fmpz_mod_poly_t m[VECTOR], veritext_t *in, fmpz_mod_poly_t t[
 static void test(flint_rand_t rand) {
 	publickey_t pk;
 	privatekey_t sk;
-	veritext_t c;
-	fmpz_mod_poly_t tmp, t[VECTOR], u;
+	veritext_t cipher;
+	fmpz_mod_poly_t tmp, t[VECTOR], c, u, v;
 	fmpz_mod_poly_t m[VECTOR], _m[VECTOR];
 
 	fmpz_mod_poly_init(tmp, *encrypt_modulus_ctx());
@@ -430,7 +451,9 @@ static void test(flint_rand_t rand) {
 	for (int i = 0; i < VECTOR; i++) {
 		fmpz_mod_poly_init(t[i], *encrypt_modulus_ctx());
 	}
+	fmpz_mod_poly_init(c, *encrypt_modulus_ctx());
 	fmpz_mod_poly_init(u, *encrypt_modulus_ctx());
+	fmpz_mod_poly_init(v, *encrypt_modulus_ctx());
 
 	encrypt_keygen(&pk, &sk, rand);
 
@@ -442,20 +465,27 @@ static void test(flint_rand_t rand) {
 		fmpz_mod_poly_zero(u, *encrypt_modulus_ctx());
 		for (int i = 0; i < VECTOR; i++) {
 			fmpz_mod_poly_randtest(t[i], rand, DEGREE, *encrypt_modulus_ctx());
-			fmpz_mod_poly_mulmod(tmp, t[i], m[i], *encrypt_poly(), *encrypt_modulus_ctx());
+			fmpz_mod_poly_mulmod(tmp, t[i], m[i], *encrypt_poly(),
+					*encrypt_modulus_ctx());
 			fmpz_mod_poly_add(u, u, tmp, *encrypt_modulus_ctx());
 		}
 
-		TEST_ASSERT(vericrypt_doit(&c, t, u, m, &pk, rand) == 1, end);
-		TEST_ASSERT(vericrypt_verify(&c, t, u, &pk) == 1, end);
-		TEST_ASSERT(vericrypt_undo(_m, &c, t, u, &pk, &sk) == 1, end);
+		TEST_ASSERT(vericrypt_doit(&cipher, t, u, m, &pk, rand) == 1, end);
+		TEST_ASSERT(vericrypt_verify(&cipher, t, u, &pk) == 1, end);
+		TEST_ASSERT(vericrypt_undo(_m, c, &cipher, t, u, &pk, &sk) == 1, end);
 
+		fmpz_mod_poly_zero(v, *encrypt_modulus_ctx());
 		for (int i = 0; i < VECTOR; i++) {
-			//TEST_ASSERT(fmpz_mod_poly_equal(m[i], _m[i], *encrypt_modulus_ctx()) == 1, end);
+			fmpz_mod_poly_mulmod(tmp, t[i], _m[i], *encrypt_poly(),
+					*encrypt_modulus_ctx());
+			fmpz_mod_poly_add(v, v, tmp, *encrypt_modulus_ctx());
 		}
+		fmpz_mod_poly_mulmod(u, u, c, *encrypt_poly(), *encrypt_modulus_ctx());
+
+		TEST_ASSERT(fmpz_mod_poly_equal(u, v, *encrypt_modulus_ctx()) == 1, end);
 	} TEST_END;
 
-end:
+  end:
 	encrypt_keyfree(&pk, &sk);
 
 	fmpz_mod_poly_clear(tmp, *encrypt_modulus_ctx());
@@ -466,14 +496,16 @@ end:
 	for (int i = 0; i < VECTOR; i++) {
 		fmpz_mod_poly_clear(t[i], *encrypt_modulus_ctx());
 	}
+	fmpz_mod_poly_clear(c, *encrypt_modulus_ctx());
 	fmpz_mod_poly_clear(u, *encrypt_modulus_ctx());
+	fmpz_mod_poly_clear(v, *encrypt_modulus_ctx());
 }
 
 static void bench(flint_rand_t rand) {
 	publickey_t pk;
 	privatekey_t sk;
-	veritext_t c;
-	fmpz_mod_poly_t tmp, t[VECTOR], u;
+	veritext_t cipher;
+	fmpz_mod_poly_t tmp, t[VECTOR], u, c;
 	fmpz_mod_poly_t m[VECTOR], _m[VECTOR];
 
 	fmpz_mod_poly_init(tmp, *encrypt_modulus_ctx());
@@ -485,6 +517,7 @@ static void bench(flint_rand_t rand) {
 	for (int i = 0; i < VECTOR; i++) {
 		fmpz_mod_poly_init(t[i], *encrypt_modulus_ctx());
 	}
+	fmpz_mod_poly_init(c, *encrypt_modulus_ctx());
 	fmpz_mod_poly_init(u, *encrypt_modulus_ctx());
 
 	encrypt_keygen(&pk, &sk, rand);
@@ -492,16 +525,17 @@ static void bench(flint_rand_t rand) {
 	fmpz_mod_poly_zero(u, *encrypt_modulus_ctx());
 	for (int i = 0; i < VECTOR; i++) {
 		fmpz_mod_poly_randtest(t[i], rand, DEGREE, *encrypt_modulus_ctx());
-		fmpz_mod_poly_mulmod(tmp, t[i], m[i], *encrypt_poly(), *encrypt_modulus_ctx());
+		fmpz_mod_poly_mulmod(tmp, t[i], m[i], *encrypt_poly(),
+				*encrypt_modulus_ctx());
 		fmpz_mod_poly_add(u, u, tmp, *encrypt_modulus_ctx());
 	}
 
 	BENCH_BEGIN("vericrypt_doit") {
-		BENCH_ADD(vericrypt_doit(&c, t, u, m, &pk, rand));
+		BENCH_ADD(vericrypt_doit(&cipher, t, u, m, &pk, rand));
 	} BENCH_END;
 
 	BENCH_BEGIN("vericrypt_verify") {
-		BENCH_ADD(vericrypt_verify(&c, t, u, &pk));
+		BENCH_ADD(vericrypt_verify(&cipher, t, u, &pk));
 	} BENCH_END;
 
 	BENCH_BEGIN("vericrypt_sample_gauss") {
@@ -509,7 +543,7 @@ static void bench(flint_rand_t rand) {
 	} BENCH_END;
 
 	BENCH_BEGIN("vericrypt_undo") {
-		BENCH_ADD(vericrypt_undo(_m, &c, t, u, &pk, &sk));
+		BENCH_ADD(vericrypt_undo(_m, c, &cipher, t, u, &pk, &sk));
 	} BENCH_END;
 
 	encrypt_keyfree(&pk, &sk);
@@ -522,6 +556,7 @@ static void bench(flint_rand_t rand) {
 	for (int i = 0; i < VECTOR; i++) {
 		fmpz_mod_poly_clear(t[i], *encrypt_modulus_ctx());
 	}
+	fmpz_mod_poly_clear(c, *encrypt_modulus_ctx());
 	fmpz_mod_poly_clear(u, *encrypt_modulus_ctx());
 }
 

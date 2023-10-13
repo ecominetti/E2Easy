@@ -1,20 +1,18 @@
-# lattice-voting-ctrsa21
+E2Easy Lattice in-person voting simulator
 
-Code accompannying the paper "Lattice-Based Proof of Shuffle and Applications to Electronic Voting" by Diego F. Aranha, Carsten Baum, Kristian Gjøsteen,
-Tjerand Silde, and Thor Tunge accepted at CT-RSA 2021.
+Code implements a simulator for a voting machine running the E2Easy lattice voting. Commitment and ZKPs primitives are imported from "Lattice-Based Proof of Shuffle and Applications to Electronic Voting" by Diego F. Aranha, Carsten Baum, Kristian Gjøsteen, Tjerand Silde, and Thor Tunge accepted at CT-RSA 2021 (link: https://github.com/dfaranha/lattice-voting-ctrsa21/tree/master), with minor modifications.
 
-Depedencies are the GMP, FLINT 2.7.1, and Dilithium reference libraries. For Dilithium, some files have to be modified so it can be compiled using g++. These files are provided in the dilithiumModifiedFiles/ folder.
-
-For building the code, run `make` inside the source directory. This sill build the binaries for `commit`, `vericrypt` and `shuffle` to test and benchmark different modules of the code.
-
-WARNING: This is an academic proof of concept, and in particular has not received code review. This implementation is NOT ready for any type of production use.
-
+Additionaly, the Dilithium reference code (link: https://github.com/pq-crystals/dilithium/tree/master) is used as the signature scheme.
 
 # Modifications to original
 
-commit_sample_short now samples uniformly in {-1,0,1}^N
+The file APISimulator.c contains the modified version of the shuffle code.
 
-voting.c shuffle run now accepts commits with different r's and uses different r's to create the intermediate commits
+These modifications include:
+    Shuffle ZKP data is now saved in an output binary file. This file is digitally signed using Dilithium 2.
+
+    Modifications to hash functions calls: FLINT library does not zero the entire data nmod_poly array when nmod_poly_zero is called, only the used MOD part. As a result, when the hash function is called passing the initial memory block location and its size, sometimes some uncleared garbage data is used. This does not result in an error if you call the shuffle prover and shuffle verifier using the same allocated memory, as in the original project. However, if you save the prover data in a file to later verify it, when the data is read and allocated to a different memory block, sometimes the new memory block is includes different garbage data and the verifier hash produces different results. To solve this problem, instead of passing the memory block as the hash argument, the value of each coefficient of the polynomial is retrieved and used as input.
+
 
 # Instructions to voting
 

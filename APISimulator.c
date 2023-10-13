@@ -374,15 +374,62 @@ static void Hash256Mp_ptr(SHA256Context *sha, mp_ptr ptr, size_t typ, size_t len
 	}
 }
 
-static void shuffle_hash(nmod_poly_t d[2], commitkey_t *key, commit_t x, commit_t y,
+
+int rej_sampling(nmod_poly_t z[WIDTH][2], nmod_poly_t v[WIDTH][2], uint64_t s2) {
+	double r, M = 1.75;
+	int64_t seed, dot, norm;
+	mpf_t u;
+	int64_t c0, c1;
+	nmod_poly_t t0, t1;
+	uint8_t buf[8];
+	gmp_randstate_t state;
+	int result;
+
+	mpf_init(u);
+	nmod_poly_init(t0, MODP);
+	nmod_poly_init(t1, MODP);
+	gmp_randinit_mt(state);
+
+	getrandom(buf, sizeof(buf), 0);
+	memcpy(&seed, buf, sizeof(buf));
+	gmp_randseed_ui(state, seed);
+	mpf_urandomb(u, state, mpf_get_default_prec());
+
+	norm = dot = 0;
+	for (int i = 0; i < WIDTH; i++) {
+		pcrt_poly_rec(t0, z[i]);
+		pcrt_poly_rec(t1, v[i]);
+		for (int j = 0; j < DEGREE; j++) {
+			c0 = nmod_poly_get_coeff_ui(t0, j);
+			c1 = nmod_poly_get_coeff_ui(t1, j);
+			if (c0 > MODP / 2)
+				c0 -= MODP;
+			if (c1 > MODP / 2)
+				c1 -= MODP;
+			dot += c0 * c1;
+			norm += c1 * c1;
+		}
+	}
+
+	r = -2.0 * dot + norm;
+	r = r / (2.0 * s2);
+	r = exp(r) / M;
+
+	result = mpf_get_d(u) > r;
+
+	mpf_clear(u);
+	nmod_poly_clear(t0);
+	nmod_poly_clear(t1);
+	return result;
+}
+
+void lin_hash(nmod_poly_t d[2], commitkey_t *key, commit_t x, commit_t y,
 		nmod_poly_t alpha, nmod_poly_t beta, nmod_poly_t u[2],
 		nmod_poly_t t[2], nmod_poly_t _t[2]) {
 	SHA256Context sha;
 	uint8_t hash[SHA256HashSize];
-	nmod_poly_t f;
 	uint32_t buf;
 
-	nmod_poly_init(f, MODP);
 	SHA256Reset(&sha);
 
 	/* Hash public key. */
@@ -390,11 +437,15 @@ static void shuffle_hash(nmod_poly_t d[2], commitkey_t *key, commit_t x, commit_
 		for (int j = 0; j < WIDTH; j++) {
 			for (int k = 0; k < 2; k++) {
 				Hash256Mp_ptr(&sha,key->B1[i][j][k]->coeffs,sizeof(uint32_t),key->B1[i][j][k]->length);
+				if (i == 0) {
+					Hash256Mp_ptr(&sha,key->b2[j][k]->coeffs,sizeof(uint32_t),key->b2[j][k]->length);
+				}
 			}
 		}
 	}
 
 	/* Hash alpha, beta from linear relation. */
+
 	Hash256Mp_ptr(&sha,alpha->coeffs,sizeof(uint32_t),alpha->length);
 	Hash256Mp_ptr(&sha,beta->coeffs,sizeof(uint32_t),beta->length);
 
@@ -412,8 +463,6 @@ static void shuffle_hash(nmod_poly_t d[2], commitkey_t *key, commit_t x, commit_
 	SHA256Result(&sha, hash);
 
 	/* Sample challenge from RNG seeded with hash. */
-	nmod_poly_zero(f);
-
 	fastrandombytes_setseed(hash);
 	for (int i = 0; i < 2; i++) {
 		nmod_poly_fit_length(d[i], DEGREE);
@@ -427,75 +476,101 @@ static void shuffle_hash(nmod_poly_t d[2], commitkey_t *key, commit_t x, commit_
 			nmod_poly_set_coeff_ui(d[i], buf, 1);
 		}
 	}
-	nmod_poly_sub(f, d[0], d[1]);
-	nmod_poly_rem(d[0], f, *commit_irred(0));
-	nmod_poly_rem(d[1], f, *commit_irred(1));
-	nmod_poly_clear(f);
+	nmod_poly_sub(d[1], d[0], d[1]);
+	nmod_poly_rem(d[0], d[1], *commit_irred(0));
+	nmod_poly_rem(d[1], d[1], *commit_irred(1));
 }
 
-static void prover_lin(nmod_poly_t y[WIDTH][2], nmod_poly_t _y[WIDTH][2],
+static void lin_prover(nmod_poly_t y[WIDTH][2], nmod_poly_t _y[WIDTH][2],
 		nmod_poly_t t[2], nmod_poly_t _t[2], nmod_poly_t u[2],
-		commit_t x, commit_t _x, commitkey_t *key,
-		nmod_poly_t alpha, nmod_poly_t beta, nmod_poly_t r[WIDTH][2], nmod_poly_t _r[WIDTH][2], int l) {
-	nmod_poly_t tmp, d[2];
-
-	nmod_poly_init(tmp, MODP);
-	for (int i = 0; i < 2; i++) {
-		nmod_poly_init(d[i], MODP);
-		nmod_poly_zero(t[i]);
-		nmod_poly_zero(_t[i]);
-		nmod_poly_zero(u[i]);
-	}
+		commit_t x, commit_t _x, commitkey_t *key, nmod_poly_t alpha,
+		nmod_poly_t beta, nmod_poly_t r[WIDTH][2], nmod_poly_t _r[WIDTH][2],
+		int l) {
+	nmod_poly_t tmp, d[2], dr[WIDTH][2], _dr[WIDTH][2];
+	int rej0, rej1;
+	// Compute sigma^2 = (11 * v * beta * sqrt(k * N))^2.
+	uint64_t sigma_sqr = 11 * NONZERO * BETA;
+	sigma_sqr *= sigma_sqr * DEGREE * WIDTH;
 
 	for (int i = 0; i < WIDTH; i++) {
-		commit_sample_gauss_crt(y[i]);
-		commit_sample_gauss_crt(_y[i]);
+		for (int j = 0; j < 2; j++) {
+			nmod_poly_init(dr[i][j], MODP);
+			nmod_poly_init(_dr[i][j], MODP);
+		}
 	}
-	for (int i = 0; i < HEIGHT; i++) {
-		for (int j = 0; j < WIDTH; j++) {
-			for (int k = 0; k < 2; k++) {
-				nmod_poly_mulmod(tmp, key->B1[i][j][k], y[j][k], *commit_irred(k));
-				nmod_poly_add(t[k], t[k], tmp);
-				nmod_poly_mulmod(tmp, key->B1[i][j][k], _y[j][k], *commit_irred(k));
-				nmod_poly_add(_t[k], _t[k], tmp);
+	nmod_poly_init(tmp, MODP);
+	nmod_poly_init(d[0], MODP);
+	nmod_poly_init(d[1], MODP);
+
+	do {
+		for (int i = 0; i < 2; i++) {
+			nmod_poly_zero(t[i]);
+			nmod_poly_zero(_t[i]);
+			nmod_poly_zero(u[i]);
+			nmod_poly_zero(d[i]);
+		}
+
+		for (int i = 0; i < WIDTH; i++) {
+			commit_sample_gauss_crt(y[i]);
+			commit_sample_gauss_crt(_y[i]);
+		}
+		for (int i = 0; i < HEIGHT; i++) {
+			for (int j = 0; j < WIDTH; j++) {
+				for (int k = 0; k < 2; k++) {
+					nmod_poly_mulmod(tmp, key->B1[i][j][k], y[j][k],
+							*commit_irred(k));
+					nmod_poly_add(t[k], t[k], tmp);
+					nmod_poly_mulmod(tmp, key->B1[i][j][k], _y[j][k],
+							*commit_irred(k));
+					nmod_poly_add(_t[k], _t[k], tmp);
+				}
 			}
 		}
-	}
+
+		for (int i = 0; i < WIDTH; i++) {
+			for (int j = 0; j < 2; j++) {
+				nmod_poly_mulmod(tmp, key->b2[i][j], y[i][j], *commit_irred(j));
+				nmod_poly_mulmod(tmp, tmp, alpha, *commit_irred(j));
+				nmod_poly_add(u[j], u[j], tmp);
+				nmod_poly_mulmod(tmp, key->b2[i][j], _y[i][j],
+						*commit_irred(j));
+				nmod_poly_sub(u[j], u[j], tmp);
+			}
+		}
+
+		/* Sample challenge. */
+		lin_hash(d, key, x, _x, alpha, beta, u, t, _t);
+
+		/* Prover */
+		for (int i = 0; i < WIDTH; i++) {
+			for (int j = 0; j < 2; j++) {
+				nmod_poly_mulmod(dr[i][j], d[j], r[i][j], *commit_irred(j));
+				nmod_poly_add(y[i][j], y[i][j], dr[i][j]);
+				nmod_poly_mulmod(_dr[i][j], d[j], _r[i][j], *commit_irred(j));
+				nmod_poly_add(_y[i][j], _y[i][j], _dr[i][j]);
+			}
+		}
+		rej0 = rej_sampling(y, dr, sigma_sqr);
+		rej1 = rej_sampling(_y, _dr, sigma_sqr);
+	} while (rej0 || rej1);
 
 	for (int i = 0; i < WIDTH; i++) {
 		for (int j = 0; j < 2; j++) {
-			nmod_poly_mulmod(tmp, key->b2[i][j], y[i][j], *commit_irred(j));
-			nmod_poly_mulmod(tmp, tmp, alpha, *commit_irred(j));
-			nmod_poly_add(u[j], u[j], tmp);
-			nmod_poly_mulmod(tmp, key->b2[i][j], _y[i][j], *commit_irred(j));
-			nmod_poly_sub(u[j], u[j], tmp);
+			nmod_poly_clear(dr[i][j]);
+			nmod_poly_clear(_dr[i][j]);
 		}
 	}
-
-	/* Sample challenge. */
-	shuffle_hash(d, key, x, _x, alpha, beta, u, t, _t);
-
-	/* Prover */
-	for (int i = 0; i < WIDTH; i++) {
-		for (int j = 0; j < 2; j++) {
-			nmod_poly_mulmod(tmp, d[j], r[i][j], *commit_irred(j));
-			nmod_poly_add(y[i][j], y[i][j], tmp);
-			nmod_poly_mulmod(tmp, d[j], _r[i][j], *commit_irred(j));
-			nmod_poly_add(_y[i][j], _y[i][j], tmp);
-		}
-	}
-
 	nmod_poly_clear(tmp);
 	for (int i = 0; i < 2; i++) {
 		nmod_poly_clear(d[i]);
 	}
 }
 
-static int verifier_lin(commit_t com, commit_t x,
-		nmod_poly_t y[WIDTH][2], nmod_poly_t _y[WIDTH][2],
-		nmod_poly_t t[2], nmod_poly_t _t[2], nmod_poly_t u[2], commitkey_t *key,
+static int lin_verifier(nmod_poly_t y[WIDTH][2], nmod_poly_t _y[WIDTH][2],
+		nmod_poly_t t[2], nmod_poly_t _t[2], nmod_poly_t u[2],
+		commit_t com, commit_t x, commitkey_t *key,
 		nmod_poly_t alpha, nmod_poly_t beta, int l, int MSGS) {
-	nmod_poly_t tmp, _d[2], v[2], _v[2], z[WIDTH], _z[WIDTH], tSave[2], _tSave[2];
+	nmod_poly_t tmp, _d[2], v[2], _v[2], z[WIDTH], _z[WIDTH];
 	int result = 1;
 
 	nmod_poly_init(tmp, MODP);
@@ -507,31 +582,31 @@ static int verifier_lin(commit_t com, commit_t x,
 		nmod_poly_init(_d[i], MODP);
 		nmod_poly_init(v[i], MODP);
 		nmod_poly_init(_v[i], MODP);
-		nmod_poly_init(tSave[i], MODP);
-		nmod_poly_init(_tSave[i], MODP);
 		nmod_poly_zero(v[i]);
 		nmod_poly_zero(_v[i]);
-		nmod_poly_set(tSave[i],t[i]);
-		nmod_poly_set(_tSave[i],_t[i]);
 	}
 
 	/* Sample challenge. */
-	shuffle_hash(_d, key, com, x, alpha, beta, u, t, _t);
+	lin_hash(_d, key, com, x, alpha, beta, u, t, _t);
 
 	/* Verifier checks norm, reconstruct from CRT representation. */
 	for (int i = 0; i < WIDTH; i++) {
 		pcrt_poly_rec(z[i], y[i]);
 		pcrt_poly_rec(_z[i], _y[i]);
-		assert(commit_norm2_sqr(z[i]) <= (uint64_t)4 * DEGREE * SIGMA_C * SIGMA_C);
-		assert(commit_norm2_sqr(_z[i]) <= (uint64_t)4 * DEGREE * SIGMA_C * SIGMA_C);
+		assert(commit_norm2_sqr(z[i]) <=
+				(uint64_t) 4 * DEGREE * SIGMA_C * SIGMA_C);
+		assert(commit_norm2_sqr(_z[i]) <=
+				(uint64_t) 4 * DEGREE * SIGMA_C * SIGMA_C);
 	}
 	/* Verifier computes B1z and B1z'. */
 	for (int i = 0; i < HEIGHT; i++) {
 		for (int j = 0; j < WIDTH; j++) {
 			for (int k = 0; k < 2; k++) {
-				nmod_poly_mulmod(tmp, key->B1[i][j][k], y[j][k], *commit_irred(k));
+				nmod_poly_mulmod(tmp, key->B1[i][j][k], y[j][k],
+						*commit_irred(k));
 				nmod_poly_add(v[k], v[k], tmp);
-				nmod_poly_mulmod(tmp, key->B1[i][j][k], _y[j][k], *commit_irred(k));
+				nmod_poly_mulmod(tmp, key->B1[i][j][k], _y[j][k],
+						*commit_irred(k));
 				nmod_poly_add(_v[k], _v[k], tmp);
 			}
 		}
@@ -603,51 +678,68 @@ static int verifier_lin(commit_t com, commit_t x,
 		nmod_poly_clear(_d[i]);
 		nmod_poly_clear(v[i]);
 		nmod_poly_clear(_v[i]);
-		nmod_poly_set(t[i],tSave[i]);
-		nmod_poly_set(_t[i],_tSave[i]);
-		nmod_poly_clear(tSave[i]);
-		nmod_poly_clear(_tSave[i]);
 	}
 	return result;
 }
 
-static int run(commit_t com[VOTERS], nmod_poly_t m[VOTERS], nmod_poly_t _m[VOTERS],
-		nmod_poly_t r[VOTERS][WIDTH][2], commitkey_t *key, flint_rand_t rng, int MSGS, char *outputFileName) {
+void shuffle_hash(nmod_poly_t beta, commit_t c[VOTERS], commit_t d[VOTERS],
+		nmod_poly_t _m[VOTERS], nmod_poly_t rho, int MSGS) {
+	flint_rand_t rand;
+	SHA256Context sha;
+	uint8_t hash[SHA256HashSize];
+	uint64_t seed0, seed1, seed2, seed3;
+
+	SHA256Reset(&sha);
+
+	for (int i = 0; i < MSGS; i++) {
+		Hash256Mp_ptr(&sha,_m[i]->coeffs,sizeof(uint32_t),_m[i]->length);
+		for (int j = 0; j < 2; j++) {
+			Hash256Mp_ptr(&sha,c[i].c1[j]->coeffs,sizeof(uint32_t),c[i].c1[j]->length);
+			Hash256Mp_ptr(&sha,c[i].c2[j]->coeffs,sizeof(uint32_t),c[i].c2[j]->length);
+			Hash256Mp_ptr(&sha,d[i].c1[j]->coeffs,sizeof(uint32_t),d[i].c1[j]->length);
+			Hash256Mp_ptr(&sha,d[i].c2[j]->coeffs,sizeof(uint32_t),d[i].c2[j]->length);
+		}
+	}
+	Hash256Mp_ptr(&sha,rho->coeffs,sizeof(uint32_t),rho->length);
+	
+	SHA256Result(&sha, hash);
+
+	flint_randinit(rand);
+	memcpy(&seed0, hash, sizeof(uint64_t));
+	memcpy(&seed1, hash + sizeof(uint64_t), sizeof(uint64_t));
+	memcpy(&seed2, hash + 2 * sizeof(uint64_t), sizeof(uint64_t));
+	memcpy(&seed3, hash + 3 * sizeof(uint64_t), sizeof(uint64_t));
+	seed0 ^= seed2;
+	seed1 ^= seed3;
+	flint_randseed(rand, seed0, seed1);
+	commit_sample_rand(beta, rand, DEGREE);
+	flint_randclear(rand);
+}
+
+static void shuffle_prover(nmod_poly_t y[VOTERS][WIDTH][2],
+		nmod_poly_t _y[VOTERS][WIDTH][2], nmod_poly_t t[VOTERS][2],
+		nmod_poly_t _t[VOTERS][2], nmod_poly_t u[VOTERS][2], commit_t d[VOTERS],
+		nmod_poly_t s[VOTERS], commit_t com[VOTERS], nmod_poly_t m[VOTERS],
+		nmod_poly_t _m[VOTERS], nmod_poly_t r[VOTERS][WIDTH][2], nmod_poly_t rho,
+		commitkey_t *key, flint_rand_t rng,
+		int MSGS, char *outputFileName) {
 	FILE *zkpOutput;
-	int flag, result = 1;
 	SHA512Context sha;
 	uint8_t HashToSign[SHA512HashSize];
 	uint8_t Signature[pqcrystals_dilithium2_BYTES];
 	size_t tamSig=0;
 	char SignatureFileName[20];
-	commit_t d[VOTERS];
-	nmod_poly_t t0, t1, rho, beta, theta[VOTERS], s[VOTERS];
-	nmod_poly_t y[WIDTH][2], _y[WIDTH][2], t[2], _t[2], u[2], _r[VOTERS][WIDTH][2];
 
+	nmod_poly_t beta, t0, t1, theta[VOTERS], _r[VOTERS][WIDTH][2];
 
 	nmod_poly_init(t0, MODP);
 	nmod_poly_init(t1, MODP);
-	nmod_poly_init(rho, MODP);
 	nmod_poly_init(beta, MODP);
 	for (int i = 0; i < VOTERS; i++) {
 		nmod_poly_init(theta[i], MODP);
-		nmod_poly_init(s[i], MODP);
-	}
-	for (int i = 0; i < 2; i++) {
-		nmod_poly_init(t[i], MODP);
-		nmod_poly_init(_t[i], MODP);
-		nmod_poly_init(u[i], MODP);
-	}
-	for (int i = 0; i < WIDTH; i++) {
-		for (int j = 0; j < 2; j++) {
-			nmod_poly_init(y[i][j], MODP);
-			nmod_poly_init(_y[i][j], MODP);
-		}
-	}
-	for (int w = 0; w < VOTERS; w++) {
-		for (int i = 0; i < WIDTH; i++) {
-			for (int j = 0; j < 2; j++) {
-				nmod_poly_init(_r[w][i][j], MODP);
+		for (int k = 0; k < 2; k++) {
+			for (int j = 0; j < WIDTH; j++) {
+				nmod_poly_init(_r[i][j][k], MODP);
 			}
 		}
 	}
@@ -659,75 +751,46 @@ static int run(commit_t com[VOTERS], nmod_poly_t m[VOTERS], nmod_poly_t _m[VOTER
 		printf("Error\n");
 	}
 
-	/* Verifier samples \rho that is different from the messages, and \beta. */
-	do {
-		flag = 1;
-		commit_sample_rand(rho, rng);
-		for (int i = 0; i < MSGS; i++) {
-			if (nmod_poly_equal(rho, _m[i]) == 1) {
-				flag = 0;
-			}
-		}
-	} while (flag == 0);
-	
-	escreverArquivoMp_ptr(&sha,rho->coeffs, sizeof(uint32_t), rho->length,zkpOutput);
+	escreverArquivoMp_ptr(&sha,rho->coeffs, sizeof(uint32_t), rho->length, zkpOutput);
 
-
-
-	/* Prover shifts the messages by rho and shuffles them. */
+	/* Prover shifts the messages by rho. */
 	for (int i = 0; i < MSGS; i++) {
 		nmod_poly_sub(m[i], m[i], rho);
 		nmod_poly_sub(_m[i], _m[i], rho);
 	}
 
-
-	/* Verifier shifts the commitment by rho. */
-	for (int i = 0; i < MSGS; i++) {
-		for (int j = 0; j < 2; j++) {
-			nmod_poly_rem(t0, rho, *commit_irred(j));
-			nmod_poly_sub(com[i].c2[j], com[i].c2[j], t0);
-		}
-	}
-
-
 	/* Prover samples theta_i and computes commitments D_i. */
-	commit_sample_rand(theta[0], rng);
+	commit_sample_rand(theta[0], rng, DEGREE);
 	nmod_poly_mulmod(t0, theta[0], _m[0], *commit_poly());
 	for (int j = 0; j < WIDTH; j++) {
 		commit_sample_short_crt(_r[0][j]);
 	}
 	commit_doit(&d[0], t0, key, _r[0]);
-
 	for (int i = 1; i < MSGS - 1; i++) {
-		commit_sample_rand(theta[i], rng);
+		commit_sample_rand(theta[i], rng, DEGREE);
 		nmod_poly_mulmod(t0, theta[i - 1], m[i], *commit_poly());
 		nmod_poly_mulmod(t1, theta[i], _m[i], *commit_poly());
 		nmod_poly_add(t0, t0, t1);
 		for (int j = 0; j < WIDTH; j++) {
-  		commit_sample_short_crt(_r[i][j]);
-  	}
+			commit_sample_short_crt(_r[i][j]);
+		}
 		commit_doit(&d[i], t0, key, _r[i]);
 	}
-
-
 	nmod_poly_mulmod(t0, theta[MSGS - 2], m[MSGS - 1], *commit_poly());
 	for (int j = 0; j < WIDTH; j++) {
 		commit_sample_short_crt(_r[MSGS - 1][j]);
 	}
 	commit_doit(&d[MSGS - 1], t0, key, _r[MSGS - 1]);
 
-
-	commit_sample_rand(beta, rng);
-
-	escreverArquivoMp_ptr(&sha,beta->coeffs, sizeof(uint32_t), beta->length,zkpOutput);
-
+	shuffle_hash(beta, com, d, _m, rho, MSGS);
+	escreverArquivoMp_ptr(&sha,beta->coeffs, sizeof(uint32_t), beta->length, zkpOutput);
 
 	nmod_poly_mulmod(s[0], theta[0], _m[0], *commit_poly());
 	nmod_poly_mulmod(t0, beta, m[0], *commit_poly());
 	nmod_poly_sub(s[0], s[0], t0);
 	nmod_poly_invmod(t0, _m[0], *commit_poly());
 	nmod_poly_mulmod(s[0], s[0], t0, *commit_poly());
-	escreverArquivoMp_ptr(&sha,s[0]->coeffs, sizeof(uint32_t), s[0]->length,zkpOutput);
+	escreverArquivoMp_ptr(&sha,s[0]->coeffs, sizeof(uint32_t), s[0]->length, zkpOutput);
 	for (int i = 1; i < MSGS - 1; i++) {
 		nmod_poly_mulmod(s[i], theta[i - 1], m[i], *commit_poly());
 		nmod_poly_mulmod(t0, theta[i], _m[i], *commit_poly());
@@ -737,22 +800,10 @@ static int run(commit_t com[VOTERS], nmod_poly_t m[VOTERS], nmod_poly_t _m[VOTER
 		nmod_poly_invmod(t0, _m[i], *commit_poly());
 		nmod_poly_mulmod(s[i], s[i], t0, *commit_poly());
 	}
-	if (MSGS > 2) {
-		nmod_poly_mulmod(s[MSGS - 1], theta[MSGS - 2], m[MSGS - 1], *commit_poly());
-		nmod_poly_mulmod(t0, beta, _m[MSGS - 1], *commit_poly());
-		if (MSGS & 1) {
-			nmod_poly_sub(s[MSGS - 1], s[0], t0);
-		} else {
-			nmod_poly_add(s[MSGS - 1], s[0], t0);
-		}
-		nmod_poly_invmod(t0, m[MSGS - 1], *commit_poly());
-		nmod_poly_mulmod(s[MSGS - 1], s[MSGS - 1], t0, *commit_poly());
-	}
 	for (int i = 1; i < MSGS-1; i++) {
 		escreverArquivoMp_ptr(&sha,s[i]->coeffs, sizeof(uint32_t), s[i]->length,zkpOutput);
 	}
 
-	/* Now run \Prod_LIN instances, one for each commitment. */
 	for (int l = 0; l < MSGS; l++) {
 		if (l < MSGS - 1) {
 			nmod_poly_mulmod(t0, s[l], _m[l], *commit_poly());
@@ -761,35 +812,23 @@ static int run(commit_t com[VOTERS], nmod_poly_t m[VOTERS], nmod_poly_t _m[VOTER
 		}
 
 		if (l == 0) {
-			prover_lin(y, _y, t, _t, u, com[0], d[0], key, beta, t0, r[0], _r[0], l);			
-			result &= verifier_lin(com[0], d[0], y, _y, t, _t, u, key, beta, t0, l, MSGS);
-
-			for (int i = 0; i < 2; i++) {
-				escreverArquivoMp_ptr(&sha,d[0].c1[i]->coeffs, sizeof(uint32_t), d[0].c1[i]->length,zkpOutput);
-				escreverArquivoMp_ptr(&sha,d[0].c2[i]->coeffs, sizeof(uint32_t), d[0].c2[i]->length,zkpOutput);
-				escreverArquivoMp_ptr(&sha,t[i]->coeffs, sizeof(uint32_t), t[i]->length,zkpOutput);
-				escreverArquivoMp_ptr(&sha,_t[i]->coeffs, sizeof(uint32_t), _t[i]->length,zkpOutput);
-				escreverArquivoMp_ptr(&sha,u[i]->coeffs, sizeof(uint32_t), u[i]->length,zkpOutput);
-
-				for (int j = 0; j < WIDTH; j++) {
-					escreverArquivoMp_ptr(&sha,y[j][i]->coeffs, sizeof(uint32_t), y[j][i]->length,zkpOutput);
-					escreverArquivoMp_ptr(&sha,_y[j][i]->coeffs, sizeof(uint32_t), _y[j][i]->length,zkpOutput);
-				}
-			}
+			lin_prover(y[l], _y[l], t[l], _t[l], u[l], com[l], d[l], key, beta,
+					t0, r[l], _r[l], l);
 		} else {
-			prover_lin(y, _y, t, _t, u, com[l], d[l], key, s[l - 1], t0, r[l], _r[l], l);
-			result &= verifier_lin(com[l], d[l], y, _y, t, _t, u, key, s[l - 1], t0, l, MSGS);
-			for (int i = 0; i < 2; i++) {
-				escreverArquivoMp_ptr(&sha,d[l].c1[i]->coeffs, sizeof(uint32_t), d[l].c1[i]->length,zkpOutput);
-				escreverArquivoMp_ptr(&sha,d[l].c2[i]->coeffs, sizeof(uint32_t), d[l].c2[i]->length,zkpOutput);
-				escreverArquivoMp_ptr(&sha,t[i]->coeffs, sizeof(uint32_t), t[i]->length,zkpOutput);
-				escreverArquivoMp_ptr(&sha,_t[i]->coeffs, sizeof(uint32_t), _t[i]->length,zkpOutput);
-				escreverArquivoMp_ptr(&sha,u[i]->coeffs, sizeof(uint32_t), u[i]->length,zkpOutput);
+			lin_prover(y[l], _y[l], t[l], _t[l], u[l], com[l], d[l], key,
+					s[l - 1], t0, r[l], _r[l], l);
+		}
 
-				for (int j = 0; j < WIDTH; j++) {
-					escreverArquivoMp_ptr(&sha,y[j][i]->coeffs, sizeof(uint32_t), y[j][i]->length,zkpOutput);
-					escreverArquivoMp_ptr(&sha,_y[j][i]->coeffs, sizeof(uint32_t), _y[j][i]->length,zkpOutput);
-				}
+		for (int i = 0; i < 2; i++) {
+			escreverArquivoMp_ptr(&sha,d[l].c1[i]->coeffs, sizeof(uint32_t), d[l].c1[i]->length,zkpOutput);
+			escreverArquivoMp_ptr(&sha,d[l].c2[i]->coeffs, sizeof(uint32_t), d[l].c2[i]->length,zkpOutput);
+			escreverArquivoMp_ptr(&sha,t[l][i]->coeffs, sizeof(uint32_t), t[l][i]->length,zkpOutput);
+			escreverArquivoMp_ptr(&sha,_t[l][i]->coeffs, sizeof(uint32_t), _t[l][i]->length,zkpOutput);
+			escreverArquivoMp_ptr(&sha,u[l][i]->coeffs, sizeof(uint32_t), u[l][i]->length,zkpOutput);
+
+			for (int j = 0; j < WIDTH; j++) {
+				escreverArquivoMp_ptr(&sha,y[l][j][i]->coeffs, sizeof(uint32_t), y[l][j][i]->length,zkpOutput);
+				escreverArquivoMp_ptr(&sha,_y[l][j][i]->coeffs, sizeof(uint32_t), _y[l][j][i]->length,zkpOutput);
 			}
 		}
 	}
@@ -809,27 +848,115 @@ static int run(commit_t com[VOTERS], nmod_poly_t m[VOTERS], nmod_poly_t _m[VOTER
 
 	nmod_poly_clear(t0);
 	nmod_poly_clear(t1);
-	nmod_poly_clear(rho);
 	nmod_poly_clear(beta);
 	for (int i = 0; i < VOTERS; i++) {
-		commit_free(&d[i]);
 		nmod_poly_clear(theta[i]);
-		nmod_poly_clear(s[i]);
-		for (int w = 0; w < WIDTH; w++) {
-			for (int j = 0; j < 2; j++) {
-				nmod_poly_clear(_r[i][w][j]);
+		for (int k = 0; k < 2; k++) {
+			for (int j = 0; j < WIDTH; j++) {
+				nmod_poly_clear(_r[i][j][k]);
 			}
 		}
 	}
-	for (int i = 0; i < 2; i++) {
-		nmod_poly_clear(t[i]);
-		nmod_poly_clear(_t[i]);
-		nmod_poly_clear(u[i]);
+}
+
+static int shuffle_verifier(nmod_poly_t y[VOTERS][WIDTH][2],
+		nmod_poly_t _y[VOTERS][WIDTH][2], nmod_poly_t t[VOTERS][2],
+		nmod_poly_t _t[VOTERS][2], nmod_poly_t u[VOTERS][2], commit_t d[VOTERS],
+		nmod_poly_t s[VOTERS], commit_t com[VOTERS], nmod_poly_t _m[VOTERS],
+		nmod_poly_t rho, commitkey_t *key, int MSGS) {
+	int result = 1;
+	nmod_poly_t beta, t0;
+
+	nmod_poly_init(t0, MODP);
+	nmod_poly_init(beta, MODP);
+
+	shuffle_hash(beta, com, d, _m, rho, MSGS);
+	
+	/* Now verify each \Prod_LIN instance, one for each commitment. */
+	for (int l = 0; l < MSGS; l++) {
+		if (l < MSGS - 1) {
+			nmod_poly_mulmod(t0, s[l], _m[l], *commit_poly());
+		} else {
+			nmod_poly_mulmod(t0, beta, _m[l], *commit_poly());
+		}
+
+		if (l == 0) {
+			result &=
+					lin_verifier(y[l], _y[l], t[l], _t[l], u[l], com[l], d[l],
+					key, beta, t0, l, MSGS);
+		} else {
+			result &=
+					lin_verifier(y[l], _y[l], t[l], _t[l], u[l], com[l], d[l],
+					key, s[l - 1], t0, l, MSGS);
+		}
 	}
-	for (int i = 0; i < WIDTH; i++) {
-		for (int j = 0; j < 2; j++) {
-			nmod_poly_clear(y[i][j]);
-			nmod_poly_clear(_y[i][j]);
+
+	nmod_poly_clear(t0);
+	nmod_poly_clear(beta);
+	return result;
+}
+
+static int run(commit_t com[VOTERS], nmod_poly_t m[VOTERS], nmod_poly_t _m[VOTERS],
+		nmod_poly_t r[VOTERS][WIDTH][2], commitkey_t *key, flint_rand_t rng,
+		int MSGS, char *outputFileName) {
+	int flag, result = 1;
+	commit_t d[VOTERS];
+	nmod_poly_t t0, t1, rho, s[VOTERS], u[VOTERS][2];
+	nmod_poly_t y[VOTERS][WIDTH][2], _y[VOTERS][WIDTH][2], t[VOTERS][2], _t[VOTERS][2];
+
+	nmod_poly_init(t0, MODP);
+	nmod_poly_init(t1, MODP);
+	nmod_poly_init(rho, MODP);
+	for (int i = 0; i < VOTERS; i++) {
+		nmod_poly_init(s[i], MODP);
+		for (int k = 0; k < 2; k++) {
+			nmod_poly_init(t[i][k], MODP);
+			nmod_poly_init(_t[i][k], MODP);
+			nmod_poly_init(u[i][k], MODP);
+			for (int j = 0; j < WIDTH; j++) {
+				nmod_poly_init(y[i][j][k], MODP);
+				nmod_poly_init(_y[i][j][k], MODP);
+			}
+		}
+	}
+
+	/* Verifier samples \rho that is different from the messages, and \beta. */
+	do {
+		flag = 1;
+		commit_sample_rand(rho, rng, DEGREE);
+		for (int i = 0; i < MSGS; i++) {
+			if (nmod_poly_equal(rho, _m[i]) == 1) {
+				flag = 0;
+			}
+		}
+	} while (flag == 0);
+
+
+	/* Verifier shifts the commitments by rho. */
+	nmod_poly_rem(t0, rho, *commit_irred(0));
+	nmod_poly_rem(t1, rho, *commit_irred(1));
+	for (int i = 0; i < MSGS; i++) {
+		nmod_poly_sub(com[i].c2[0], com[i].c2[0], t0);
+		nmod_poly_sub(com[i].c2[1], com[i].c2[1], t1);
+	}
+
+	shuffle_prover(y, _y, t, _t, u, d, s, com, m, _m, r, rho, key, rng, MSGS, outputFileName);
+
+	result = shuffle_verifier(y, _y, t, _t, u, d, s, com, _m, rho, key, MSGS);
+
+	nmod_poly_clear(t0);
+	nmod_poly_clear(t1);
+	nmod_poly_clear(rho);
+	for (int i = 0; i < VOTERS; i++) {
+		nmod_poly_clear(s[i]);
+		for (int k = 0; k < 2; k++) {
+			nmod_poly_clear(t[i][k]);
+			nmod_poly_clear(_t[i][k]);
+			nmod_poly_clear(u[i][k]);
+			for (int j = 0; j < WIDTH; j++) {
+				nmod_poly_clear(y[i][j][k]);
+				nmod_poly_clear(_y[i][j][k]);
+			}
 		}
 	}
 
@@ -1011,8 +1138,6 @@ void onVoterActive(uint32_t vote, uint8_t cont) {
 
 		/* Inform that a vote was casted for this contest */
 		voteContestCasted += (0x01 << cont);
-
-		/* TODO: output tracking code and timer */
 	}
 }
 
@@ -1263,8 +1388,6 @@ void onFinish () {
 			}
 		}
 	}
-
-	/* TODO: Sign ZKP result and final tracking code */
 
 	for (int cont = 0; cont < CONTESTS; cont++) {
 		for (int i = 0; i < VOTERS; i++) {
@@ -1715,7 +1838,7 @@ void validateZKPOutput (char ZKPOutputName[20], char ZKPSigOutputName[20],
 	} else {
 		printf("\n\nERRO! -- ASSINATURA DO ARQUIVO DE ZKP NAO VERIFICADA -- ERRO!\n\n");
 	}
-	
+
 	/* Prover shifts the messages by rho */
 	for (int i = 0; i < numVoters; i++) {
 		nmod_poly_sub(_m[i], _m[i], rho);
@@ -1729,19 +1852,8 @@ void validateZKPOutput (char ZKPOutputName[20], char ZKPSigOutputName[20],
 		}
 	}
 
-	for (int l = 0; l < numVoters; l++) {
-		if (l < numVoters - 1) {
-			nmod_poly_mulmod(t0, s[l], _m[l], *commit_poly());
-		} else {
-			nmod_poly_mulmod(t0, beta, _m[l], *commit_poly());
-		}
+	result = shuffle_verifier(y, _y, t, _t, u, d, s, com, _m, rho, &keyTemp, numVoters);
 
-		if (l == 0) {
-			result &= verifier_lin(com[0], d[0], y[0], _y[0], t[0], _t[0], u[0], &keyTemp, beta, t0, l, numVoters);
-		} else {
-			result &= verifier_lin(com[l], d[l], y[l], _y[l], t[l], _t[l], u[l], &keyTemp, s[l - 1], t0, l, numVoters);
-		}
-	}
 	if (result == 1) {
 		printf("\nPROVA ZKP DE SHUFFLE VERIFICADA COM SUCESSO!\n");
 	} else {
