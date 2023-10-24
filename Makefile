@@ -42,10 +42,14 @@ APISimulator: APITest.c APISimulator.c APISimulator.h commit.c
 	${CPP} ${CFLAGS} -DSIGMA_PARAM=SIGMA_C -c gaussian_ct.cpp -o gaussian.o
 	${CPP} ${CFLAGS} -L${DILITHIUM_PATH} -I${DILITHIUM_PATH} APITest.c APISimulator.c commit.c sha224-256.c sha384-512.c ${GAUSSIAN} ${DIL_LIBS} ${LIBS} -o APITest 
 
+APIBench: APIBench.c APISimulator.c APISimulator.h commit.c ${TEST} ${BENCH}
+	${CPP} ${CFLAGS} -DSIGMA_PARAM=SIGMA_C -c gaussian_ct.cpp -o gaussian.o
+	${CPP} ${CFLAGS} -L${DILITHIUM_PATH} -I${DILITHIUM_PATH} APIBench.c APISimulator.c commit.c sha224-256.c sha384-512.c ${GAUSSIAN} ${TEST} ${BENCH} ${DIL_LIBS} ${LIBS} -o APIBench
+
 spoilCheck: spoilCheck.c commit.c ${TEST} ${BENCH}
 	${CPP} ${CFLAGS} -DSIGMA_PARAM=SIGMA_C -c gaussian_ct.cpp -o gaussian.o
 	${CPP} ${CFLAGS} -c commit.c -o commit.o ${LIBS}
 	${CPP} ${CFLAGS} -DMAIN spoilCheck.c commit.o sha224-256.c ${GAUSSIAN} ${TEST} ${BENCH} -o spoilCheck ${LIBS}
 
 clean:
-	rm *.o commit encrypt vericrypt shuffle voting spoilCheck votingSimulator APISimulator APITest
+	rm *.o commit encrypt vericrypt shuffle voting spoilCheck votingSimulator APISimulator APITest APIBecnh
