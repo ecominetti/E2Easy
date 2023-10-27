@@ -52,4 +52,4 @@ spoilCheck: spoilCheck.c commit.c ${TEST} ${BENCH}
 	${CPP} ${CFLAGS} -DMAIN spoilCheck.c commit.o sha224-256.c ${GAUSSIAN} ${TEST} ${BENCH} -o spoilCheck ${LIBS}
 
 clean:
-	rm *.o commit encrypt vericrypt shuffle voting spoilCheck votingSimulator APISimulator APITest APIBecnh
+	rm *.o commit encrypt vericrypt shuffle voting spoilCheck votingSimulator APISimulator APITest APIBench
