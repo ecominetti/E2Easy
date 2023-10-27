@@ -5,7 +5,7 @@
 int main(int argc, char *arg[]) {
 	FILE *resultadoCycles;
 	unsigned long long onVoterActiveCycles, onChallengeCycles;
-  	int numTests=3;
+  	int numTests=1000;
 	uint32_t vote;
 	uint8_t infoContest=0x3f;
 	int eleitoresHabilitados;
@@ -18,7 +18,7 @@ int main(int argc, char *arg[]) {
 		return 0;
 	}
 
-	for (eleitoresHabilitados = 10; eleitoresHabilitados <= 15; eleitoresHabilitados+=1) {
+	for (eleitoresHabilitados = 100; eleitoresHabilitados <= 500; eleitoresHabilitados+=100) {
 
 		fprintf(resultadoCycles, "Numero eleitores = %d (%d votos), %d testes\n", eleitoresHabilitados, eleitoresHabilitados*6, numTests);
 		fprintf(resultadoCycles, "    Setup;  onStart;onVoterActive;  onChallenge;    onFinish\n");
