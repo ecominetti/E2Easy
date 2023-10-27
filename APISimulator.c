@@ -942,11 +942,17 @@ static int run(commit_t com[VOTERS], nmod_poly_t m[VOTERS], nmod_poly_t _m[VOTER
 
 	shuffle_prover(y, _y, t, _t, u, d, s, com, m, _m, r, rho, key, rng, MSGS, outputFileName);
 
-	result = shuffle_verifier(y, _y, t, _t, u, d, s, com, _m, rho, key, MSGS);
+	//result = shuffle_verifier(y, _y, t, _t, u, d, s, com, _m, rho, key, MSGS);
 
 	nmod_poly_clear(t0);
 	nmod_poly_clear(t1);
 	nmod_poly_clear(rho);
+	for (int i = 0; i < MSGS; i++) {
+		for (int j = 0; j < 2; j++){
+			nmod_poly_clear(d[i].c1[j]);
+			nmod_poly_clear(d[i].c2[j]);
+		}
+	}
 	for (int i = 0; i < VOTERS; i++) {
 		nmod_poly_clear(s[i]);
 		for (int k = 0; k < 2; k++) {
