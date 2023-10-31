@@ -420,6 +420,7 @@ int rej_sampling(nmod_poly_t z[WIDTH][2], nmod_poly_t v[WIDTH][2], uint64_t s2) 
 	mpf_clear(u);
 	nmod_poly_clear(t0);
 	nmod_poly_clear(t1);
+	gmp_randclear(state);
 	return result;
 }
 
@@ -947,7 +948,7 @@ static int run(commit_t com[VOTERS], nmod_poly_t m[VOTERS], nmod_poly_t _m[VOTER
 	nmod_poly_clear(t0);
 	nmod_poly_clear(t1);
 	nmod_poly_clear(rho);
-	for (int i = 0; i < MSGS; i++) {
+	for (int i = 0; i < VOTERS; i++) {
 		for (int j = 0; j < 2; j++){
 			nmod_poly_clear(d[i].c1[j]);
 			nmod_poly_clear(d[i].c2[j]);
